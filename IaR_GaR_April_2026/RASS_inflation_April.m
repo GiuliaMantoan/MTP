@@ -435,19 +435,23 @@ qt_idx   = arrayfun(@(q) find(abs(cfg.quantiles-q)<1e-8,1), ...
 
 for h_plot = cfg.hPlot
 
-    fcst_dates = months_origin + calmonths(h_plot - 1);
+    tgt_dates = months_origin + calmonths(h_plot - 1);
     Q = squeeze(pred_q(:, qt_idx, h_plot));   % nOrigins × 7
 
-    [tf, loc] = ismember(datenum(fcst_dates), dateNumeric_full);
-    act = NaN(size(fcst_dates));
-    act(tf) = actual_var(loc(tf));
+    % Filter out any all-NaN rows before passing to plotFanBands
+    valid  = ~all(isnan(Q), 2);
+    Q_v    = Q(valid, :);
+    tgt_v  = tgt_dates(valid);
+
+    % Actual: full observed series, restricted to OOS window
+    oos_mask = actualDT >= tgt_dates(1);
 
     fig = figure('Units','normalized','Position',[0.2 0.15 0.6 0.7],'Color','w');
     ax  = gca; hold(ax,'on');
-    plotFanBands(ax, fcst_dates, Q);
-    plot(ax, fcst_dates, Q(:,4), '--','Color',[0 0 0.7],'LineWidth',1.2,'DisplayName','50^{th}');
-    plot(ax, fcst_dates, act,    'k', 'LineWidth',1.25, 'DisplayName','Outturn');
-    styleAxis(ax, fcst_dates, 2);
+    plotFanBands(ax, tgt_v, Q_v);
+    plot(ax, tgt_v, Q_v(:,4), '--','Color',[0 0 0.7],'LineWidth',1.2,'DisplayName','50^{th}');
+    plot(ax, actualDT(oos_mask), actual_var(oos_mask), 'k', 'LineWidth',1.25, 'DisplayName','Outturn');
+    styleAxis(ax, tgt_dates, 2);
     legend(ax,'show','Location','northoutside','Orientation','horizontal'); legend boxoff;
     set(ax,'FontSize',14);
     title(ax, sprintf('Inflation (CPI) — OOS fan  |  h = %d months ahead', h_plot-1));
@@ -638,7 +642,9 @@ function plotFanBands(ax, dates, Q)
               [3,5], [0.4  0.6 1],  '25^{th}–75^{th}' };
     for b = 1:3
         lo = Q(:, bands{b,1}(1))';  hi = Q(:, bands{b,1}(2))';
-        fill(ax, [d, fliplr(d)], [lo, fliplr(hi)], bands{b,2}, ...
+        xpoly = [d, fliplr(d)];  ypoly = [lo, fliplr(hi)];
+        if all(isnan(ypoly)), continue; end
+        fill(ax, xpoly, ypoly, bands{b,2}, ...
              'EdgeColor','none','FaceAlpha',1,'DisplayName',bands{b,3});
     end
 end
