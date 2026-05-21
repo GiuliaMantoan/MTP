@@ -1,420 +1,388 @@
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% Forecast evaluation code %%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-% Authors: David Aikman, Rhys Bidder, Simon Lloyd, Guilia Mantoan, Simone
-% Maso, Aditya Mori and Matthew Tong
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%  FORECAST EVALUATION — GDP GROWTH  (multi-model comparison)
+%%
+%%  Authors: David Aikman, Rhys Bidder, Simon Lloyd, Giulia Mantoan,
+%%           Simone Maso, Aditya Mori, Matthew Tong
+%%
+%%  Tests: KS · Rossi-Sekhposyan (2019) · Berkowitz (2001) ·
+%%         Knueppel (2015) · Mitchell-Weale (2023) · Galvao-Mantoan-Mitchell
+%%
+%%  Compares: Fan Chart · QR · BVAR
+%%  Results are saved side-by-side for each test statistic.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 close all; clear; clc;
 
-%% Settings
+%% ── Paths (defined first so scriptDir is available throughout) ───────────
+scriptDir = fileparts(mfilename('fullpath'));
+outDir    = fullfile(scriptDir, 'Outputs');
+evalDir   = fullfile(outDir, 'forecast_evaluation');
+if ~exist(evalDir,'dir'), mkdir(evalDir); end
 
-set(0,'defaultAxesFontName', 'Times'); % font for chart axis
-set(0,'defaultAxesLineStyleOrder','-|--|:', 'defaultLineLineWidth',1) % line style
-rng('default'); % defaul random number generateor
-rng(0);
+%% ════════════════════════════════════════════════════════════════════════
+%%  CONFIGURATION  ← edit here
+%% ════════════════════════════════════════════════════════════════════════
 
-cd 'C:\Users\k2368907\Dropbox\BoE-KCL Macro Forecasting\' % chage here the cd
-addpath('Data\') % data input
-addpath('Codes\intermediate_codes\')  % intemediate code (data loading..)
-addpath('Codes\functions\')
-addpath('Codes\functions\azzalini')  % skew t functions
-outputFolder = fullfile(pwd, 'Outputs/');
+% Horizons to evaluate: 0 = nowcast, 1 = 1Q ahead, …, 12 = 3Y ahead
+cfg.eval_horizons = 0:12;
 
+% Common evaluation window (set [] to use each model's full available sample)
+% Origins outside this window are treated as NaN in the PITs.
+cfg.eval_start = datetime('30-Sep-2007', 'InputFormat', 'dd-MMM-yyyy');
+cfg.eval_end   = datetime('31-Mar-2024', 'InputFormat', 'dd-MMM-yyyy');
 
-% file names
-fullFileName = fullfile('Data', 'GaRDataRaw_quarterly.xlsx'); % raw data
+% Covid exclusion window (same treatment as GDP QR and BVAR models)
+% Origins whose date falls in [covidStart, covidEnd] are set to NaN in all models.
+cfg.covidStart = datetime(2020, 3, 31);   % Q1 2020 (first excluded quarter)
+cfg.covidEnd   = datetime(2022, 3, 31);   % Q1 2022 (annualised rate still spans Covid)
 
-%% Import Data
+% Fan chart settings
+cfg.fanchart.start_date = datetime('30-Sep-2007', 'InputFormat', 'dd-MMM-yyyy');
+cfg.fanchart.end_date   = datetime('31-Mar-2024', 'InputFormat', 'dd-MMM-yyyy');
+cfg.fanchart.end_fcst   = datetime('30-Mar-2027', 'InputFormat', 'dd-MMM-yyyy');
+cfg.fanchart.covid_date = datetime('30-Jun-2020', 'InputFormat', 'dd-MMM-yyyy');
 
-%%%%%%%%%%%%%%%%%%%%%%
-% Data loading panel %
-%%%%%%%%%%%%%%%%%%%%%%
+% Root directory that boefsctdata_growth uses via cd() to locate
+% Data\kcl_data\gdp_growth_projection_parameters_mpc.xlsx
+% Set this to the folder that contains the Data\ subfolder.
+cfg.paths.boe_root     = scriptDir;   % ← adjust if the BoE Excel is elsewhere
+cfg.paths.fanchart_raw = fullfile(scriptDir, 'GaRDataRaw_quarterly_BIS_march.xlsx');
+cfg.paths.qr_pred_q    = fullfile(outDir, 'predicted_quantiles_gdp_OOS.mat');
+cfg.paths.qr_actual    = fullfile(outDir, 'actual_gdp_yoy_OOS.mat');
+cfg.paths.bvar         = fullfile(outDir, 'BVAR', 'BVAR_gdp_pred_q.mat');
 
+%% ── Global settings ──────────────────────────────────────────────────────
+set(0,'defaultAxesFontName', 'Times');
+set(0,'defaultAxesLineStyleOrder','-|--|:', 'defaultLineLineWidth', 1);
+rng(0, 'twister');   % specify generator explicitly so legacy mode doesn't block this
 
-start_date = datetime('30-Sep-2007', 'InputFormat', 'dd-MMM-yyyy'); % first forecasted period
-end_date   = datetime('31-Mar-2024', 'InputFormat', 'dd-MMM-yyyy'); % last date with actual data. 
-end_fcst   = datetime('30-Mar-2027', 'InputFormat', 'dd-MMM-yyyy'); % forecast end date
-covid_date = datetime('30-Jun-2020', 'InputFormat', 'dd-MMM-yyyy');
-varnames = {'g4rgdp'}; % actual data variables you want to import. Here it is growth
-ctrynames = {'UK'}; % actual data country you want to import. This will be the column from the sheet that is being imported.
-momentlist = {'fcstmean', 'fcststdev', 'fcstskew'}; % moments for OLS and skewt
+addpath(fullfile(scriptDir, 'intermediate_codes'));
+addpath(fullfile(scriptDir, 'functions'));
+addpath(fullfile(scriptDir, 'functions', 'azzalini'));
 
-boefsctdata_growth; % this code focus only on growth
+nHor    = numel(cfg.eval_horizons);
+models  = {'fanchart', 'qr', 'bvar'};
+nModels = numel(models);
 
-actualdata;
+%% ════════════════════════════════════════════════════════════════════════
+%%  LOAD ALL MODELS AND COMPUTE PITs
+%%
+%%  zgrowth_all{m} — nHor × nOrigins_m  matrix of PITs for model m.
+%%  Row ih = cfg.eval_horizons(ih) quarters ahead.
+%%  Columns not in cfg.eval_start/end window are left as NaN.
+%% ════════════════════════════════════════════════════════════════════════
 
-% actualvar %
+zgrowth_all   = cell(nModels, 1);
+originDT_all  = cell(nModels, 1);   % datetime of each origin (for window filter)
 
-%% Covid treatment
+%% ── (1) Fan chart ────────────────────────────────────────────────────────
+fprintf('Loading fan chart...\n');
 
-% drop the columns related to covid (all zeros) Q2-2020
-covid = (year(covid_date) - year(start_date)) * 4 + (ceil(month(covid_date)/3) - ceil(month(start_date)/3));
+% Variables required by boefsctdata_growth and actualdata
+fullFileName = cfg.paths.fanchart_raw;   % used by actualdata
+varnames     = {'g4rgdp'};
+ctrynames    = {'UK'};
+momentlist   = {'fcstmean', 'fcststdev', 'fcstskew'};
+outputFolder = evalDir;
 
-if size(actualvar, 2) >= (covid +1)
-    actualvar(:, (covid +1)) = [];
+start_date = cfg.fanchart.start_date;
+end_date   = cfg.fanchart.end_date;
+end_fcst   = cfg.fanchart.end_fcst;     % required by boefsctdata_growth
+covid_date = cfg.fanchart.covid_date;
+
+% boefsctdata_growth ends with clearvars -except ..., wiping most of the
+% workspace including ws_backup itself. We save using outputFolder directly
+% (it IS in the exception list and survives), then rebuild the path from it.
+save(fullfile(outputFolder, 'ws_backup_temp.mat'));
+
+cd(cfg.paths.boe_root);
+boefsctdata_growth;   % loads mtestdata; then wipes workspace via clearvars
+% ← only mtestdata + {start_date end_date covid_date ctrynames varnames
+%   fullFileName momentlist outputFolder covid_end_date} survive here
+
+mtestdata_fc = mtestdata;                           % grab before restore
+load(fullfile(outputFolder, 'ws_backup_temp.mat')); % outputFolder still alive
+delete(fullfile(evalDir, 'ws_backup_temp.mat'));    % evalDir restored by load
+mtestdata = mtestdata_fc;                           % put fanchart data back
+clear mtestdata_fc;
+
+% actualdata has no clearvars — safe to call directly.
+% It needs: fullFileName, varnames, ctrynames, start_date, end_date.
+actualdata;           % loads actualvar  (13 × nOrigins)
+
+% Covid column drop
+covid_col = (year(covid_date) - year(start_date)) * 4 + ...
+            (ceil(month(covid_date)/3) - ceil(month(start_date)/3));
+if size(actualvar, 2) >= (covid_col + 1)
+    actualvar(:, covid_col + 1) = [];
+end
+if size(mtestdata, 2) >= (covid_col * 3 + 1)
+    mtestdata(:, (covid_col*3+1):(covid_col*3+3)) = [];
 end
 
-if size(mtestdata, 2) >= (covid*3 + 1)
-    mtestdata(:, (covid*3 + 1):(covid*3 + 3)) = [];
-end
+modevar = mtestdata(:, 1:3:end);
+meanvar = mtestdata(:, 2:3:end);
+dispvar = mtestdata(:, 3:3:end);
 
-%% Import the PITs
+% Build quarter dates and drop the same Q2-2020 column removed from actualvar
+quarterDates_full = start_date : calmonths(3) : end_date;
+quarterDates = [quarterDates_full(1:covid_col), quarterDates_full(covid_col+2:end)];
+nOrig_fc     = size(meanvar, 2);
+quarterDates = quarterDates(1 : nOrig_fc);   % guard against any length mismatch
+originDT_all{1} = quarterDates(:);
 
-%%%%%%%%%%%%%%%%%%%
-% Model selection %
-%%%%%%%%%%%%%%%%%%%
-
-modelfcst = 0; % 0 is boe, 1 is ols, 3 is skewt
-modellist = {'boe', 'qreg'};
-
-
-if modelfcst == 0
-
-    %%%%%%%%%%%
-    %   BOE   % (here we also compute mean, std dev and skew)
-    %%%%%%%%%%%
-
-    % Extract the corresponding columns from momgrowth (mode | mean | dispersion)
-    modevar = mtestdata(:, 1:3:end);  % mode
-    meanvar = mtestdata(:, 2:3:end); % mean
-    square_root_dispersion_var = mtestdata(:, 3:3:end); % dispersion
-
-    % generate a zero matrix to store the values
-    zgrowth = NaN(size(actualvar));
-    stddevvar = NaN(size(actualvar));
-    skewvar = NaN(size(actualvar));
-
-    % loop
-
-    for i = 1:size(meanvar, 1)
-
-        for j = 1:size(meanvar, 2)
-
-            %if ~isnan(actualvar(i, j))
-
-            if meanvar(i,j) - modevar(i,j) ~= 0
-
-                gam = stdtogam(meanvar(i,j), modevar(i,j), square_root_dispersion_var(i,j)); % Skewness in  Britton, Fisher and Whitley formulation
-                sig = mom2g(square_root_dispersion_var(i,j), gam); % get the variance in the common formulation
-
-                % parameter of the distribution
-                [m, s1, s2] = momtopar(meanvar(i,j), modevar(i,j), sig); % get lhs and rhs std dev (m is just the mode)
-
-                if ~isnan(actualvar(i, j))
-                    zgrowth(i, j) = integral(@(y) ftp(y, m, s1, s2), -3, actualvar(i, j)); % get the cdf
-                else
-                    zgrowth(i, j) = NaN;
-                end
-
-                % get sd and skew
-                stddevvar(i,j) = sqrt(sig);
-                term1_skw = sqrt(2/pi) * (s2 - s1);
-                term2_skw = (4/pi - 1) .* ((s2 - s1).^2 + s1 .* s2);
-                skewvar(i,j) =  term1_skw .* term2_skw;
-
-            else
-
-                if ~isnan(actualvar(i, j))
-                    zgrowth(i, j) = normcdf((actualvar(i, j) - meanvar(i,j)) / square_root_dispersion_var(i,j)); % standardized value for growth if mean = mode
-                else
-                    zgrowth(i, j) = NaN;
-                end
-
-                % get sd and skew
-                stddevvar(i,j) = square_root_dispersion_var(i,j);
-                skewvar(i,j) =  0;
-
+zgrowth_fc = NaN(size(actualvar));
+for i = 1:size(meanvar, 1)
+    for j = 1:nOrig_fc
+        if meanvar(i,j) - modevar(i,j) ~= 0
+            gam = stdtogam(meanvar(i,j), modevar(i,j), dispvar(i,j));
+            sig = mom2g(dispvar(i,j), gam);
+            [m, s1, s2] = momtopar(meanvar(i,j), modevar(i,j), sig);
+            if ~isnan(actualvar(i,j))
+                zgrowth_fc(i,j) = integral(@(y) ftp(y,m,s1,s2), -3, actualvar(i,j));
             end
-            % end
+        else
+            if ~isnan(actualvar(i,j))
+                zgrowth_fc(i,j) = normcdf((actualvar(i,j) - meanvar(i,j)) / dispvar(i,j));
+            end
         end
     end
+end
+zgrowth_fc = zgrowth_fc(:, ~all(isnan(zgrowth_fc), 1));
 
-    % make sure no NaN col
-    zgrowth = zgrowth(:, ~all(isnan(zgrowth), 1));
+% Restrict to eval horizons (rows = horizons in fan chart are 0..H-1)
+if size(zgrowth_fc, 1) >= nHor
+    zgrowth_all{1} = zgrowth_fc(cfg.eval_horizons + 1, :);
+else
+    zgrowth_all{1} = zgrowth_fc;
+end
 
-    % save the outcome for Boe Forecast
-    fcstmean   = [meanvar(:,1:covid),   zeros(size(meanvar,1),1),   meanvar(:,covid+1:end)];
-    fcststdev = [stddevvar(:,1:covid),  zeros(size(stddevvar,1),1), stddevvar(:,covid+1:end)];
-    fcstskew   = [skewvar(:,1:covid),   zeros(size(skewvar,1),1),   skewvar(:,covid+1:end)];
+clearvars modevar meanvar dispvar zgrowth_fc actualvar mtestdata ...
+          gam sig i j covid_col nOrig_fc;
 
-    %% ADDED !! 
-    % The below section has been added because previously there was an
-    % issue in line 160 whereby currentVar featured 52 columns despite
-    % there being only 51. This arises because of lines 136-139 which adds
-    % covid+1. The snippet below strips the "+1". 
-    % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    % fcstmean  = fcstmean(:, 1:covid);
-    % fcststdev = fcststdev(:,1:covid);
-    % fcstskew  = fcstskew(:, 1:covid);
-    % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ── (2) QR ───────────────────────────────────────────────────────────────
+fprintf('Loading QR model...\n');
 
-    % settings
-    quarterDates = start_date:calmonths(3):end_date;
-    momentlist = {'fcstmean', 'fcststdev', 'fcstskew'};
-    horizons = 13;
-    filename = fullfile(outputFolder, 'boe_growth.xlsx');
+qd = load(cfg.paths.qr_pred_q, 'pred_q');
+ad = load(cfg.paths.qr_actual,  'actual_var', 'idx_est', 'dateNumeric_full');
+pred_q_qr  = qd.pred_q;       % nOrigins × Qn × horizons
+actual_qr  = ad.actual_var;
+idx_est_qr = ad.idx_est;
+dates_qr   = ad.dateNumeric_full;
+quant_qr   = (0.05:0.05:0.95)';
 
-    % Loop over each variable in the list
-    for i = 1:length(momentlist)
+nOrig_qr        = size(pred_q_qr, 1);
+originDT_all{2} = datetime(dates_qr(idx_est_qr : idx_est_qr + nOrig_qr - 1), ...
+                            'ConvertFrom','datenum')';
 
-        % Get the current forecast data
-        currentVar = eval(momentlist{i});
+zgrowth_qr = NaN(nHor, nOrig_qr);
+for ih = 1:nHor
+    h = cfg.eval_horizons(ih) + 1;          % pred_q index (h=1 = nowcast)
+    if h > size(pred_q_qr, 3), continue; end
+    for t = 1:nOrig_qr
+        q_vals = squeeze(pred_q_qr(t, :, h));
+        if all(isnan(q_vals)), continue; end
+        tgt = (idx_est_qr + t - 1) + (h - 1);
+        if tgt > length(actual_qr), continue; end
+        actual_h = actual_qr(tgt);
+        if isnan(actual_h), continue; end
+        pit = interp1(q_vals(:), quant_qr, actual_h, 'linear', 'extrap');
+        zgrowth_qr(ih, t) = min(max(pit, 0), 1);
+    end
+end
+zgrowth_all{2} = zgrowth_qr;
+clearvars qd ad pred_q_qr actual_qr idx_est_qr dates_qr quant_qr zgrowth_qr ...
+          ih h t q_vals tgt actual_h pit nOrig_qr;
 
-        % Create the table with quarterly dates as the first column
-        T = [table(quarterDates', 'VariableNames', {'Dates'}), array2table(currentVar')];
+%% ── (3) BVAR ─────────────────────────────────────────────────────────────
+fprintf('Loading BVAR...\n');
 
-        % Rename the forecast columns from the second column onward as h_0, h_1, ..., h_12
-        forecastNames = strcat("h_", string(0:horizons-1));
-        T.Properties.VariableNames(2:end) = cellstr(forecastNames);
-        % Export the table to a specific sheet in the Excel file
-        writetable(T, filename, 'Sheet', momentlist{i});
+bd = load(cfg.paths.bvar, 'pred_q', 'actualvar', 'dateNumeric_est', 'cfg');
+pred_q_bv  = bd.pred_q;       % nOrigins × Qn × horizons
+actual_bv  = bd.actualvar;    % nOrigins × horizons  (already aligned)
+quant_bv   = bd.cfg.quantiles(:);
 
+nOrig_bv        = size(pred_q_bv, 1);
+originDT_all{3} = datetime(bd.dateNumeric_est, 'ConvertFrom','datenum')';
+
+zgrowth_bv = NaN(nHor, nOrig_bv);
+for ih = 1:nHor
+    h = cfg.eval_horizons(ih) + 1;
+    if h > size(pred_q_bv, 3), continue; end
+    for t = 1:nOrig_bv
+        q_vals = squeeze(pred_q_bv(t, :, h));
+        if all(isnan(q_vals)), continue; end
+        actual_h = actual_bv(t, h);
+        if isnan(actual_h), continue; end
+        pit = interp1(q_vals(:), quant_bv, actual_h, 'linear', 'extrap');
+        zgrowth_bv(ih, t) = min(max(pit, 0), 1);
+    end
+end
+zgrowth_all{3} = zgrowth_bv;
+clearvars bd pred_q_bv actual_bv quant_bv zgrowth_bv ...
+          ih h t q_vals actual_h pit nOrig_bv;
+
+%% ── Apply common evaluation window (if set) ──────────────────────────────
+if ~isempty(cfg.eval_start) && ~isempty(cfg.eval_end)
+    for m = 1:nModels
+        keep = originDT_all{m} >= cfg.eval_start & originDT_all{m} <= cfg.eval_end;
+        zgrowth_all{m}  = zgrowth_all{m}(:, keep);
+        originDT_all{m} = originDT_all{m}(keep);
+    end
+end
+
+%% ── Apply Covid exclusion window (same treatment as GDP QR and BVAR) ─────
+% Origins in [covidStart, covidEnd] are set to NaN in all three models.
+% For QR and BVAR this is already NaN from the models themselves;
+% this step enforces the same exclusion uniformly on the fan chart too.
+for m = 1:nModels
+    covid_mask = originDT_all{m} >= cfg.covidStart & originDT_all{m} <= cfg.covidEnd;
+    zgrowth_all{m}(:, covid_mask) = NaN;
+end
+
+%% ════════════════════════════════════════════════════════════════════════
+%%  RUN TESTS FOR EACH MODEL
+%% ════════════════════════════════════════════════════════════════════════
+
+% Pre-allocate result structs (one entry per model)
+results = struct();
+for m = 1:nModels
+    results.(models{m}).ksgrowth     = NaN(nHor, 1);
+    results.(models{m}).ksgrowthpv   = NaN(nHor, 1);
+    results.(models{m}).rs_ks_test   = NaN(nHor, 1);
+    results.(models{m}).rs_cvm_test  = NaN(nHor, 1);
+    results.(models{m}).rs_ks_logic  = NaN(nHor, 3);
+    results.(models{m}).rs_cvm_logic = NaN(nHor, 3);
+    results.(models{m}).bert1        = NaN(nHor, 1);
+    results.(models{m}).bert2        = NaN(nHor, 1);
+    results.(models{m}).berK1        = NaN(nHor, 1);
+    results.(models{m}).berK2        = NaN(nHor, 1);
+    results.(models{m}).knueppel_stat= NaN(nHor, 1);
+    results.(models{m}).knueppel_pval= NaN(nHor, 1);
+    results.(models{m}).MW_stat      = NaN(nHor, 1);
+    results.(models{m}).MW_pval      = NaN(nHor, 1);
+end
+
+lags     = -1;    % automatic lag selection (Knueppel / MW)
+prewhite =  0;
+z_u = 0.95;  z_l = 0.05;  df = 5;   % MW parameters
+rvec_rs = linspace(0, 1, 1000);
+
+for m = 1:nModels
+    mod = models{m};
+    zgrowth = zgrowth_all{m};
+    fprintf('\nRunning tests: %s ...\n', mod);
+
+    KS_vec  = zeros(nHor, 1);
+    CVM_vec = zeros(nHor, 1);
+
+    for i = 1:nHor
+        z_row = zgrowth(i, :)';
+        z_row = z_row(~isnan(z_row));
+        if numel(z_row) < 5, continue; end   % skip if too few obs
+
+        % KS
+        [results.(mod).ksgrowth(i), results.(mod).ksgrowthpv(i)] = kstestu(z_row);
+
+        % Rossi-Sekhposyan
+        [cv_i, stat_i, logic_i, KS_vec(i), CVM_vec(i)] = rs_test(z_row, rvec_rs);
+        results.(mod).rs_ks_test(i)   = stat_i.ks_stat;
+        results.(mod).rs_cvm_test(i)  = stat_i.cvm_stat;
+        results.(mod).rs_ks_logic(i,:)  = logic_i.ks_array;
+        results.(mod).rs_cvm_logic(i,:) = logic_i.cvm_array;
+
+        % Berkowitz
+        [results.(mod).bert1(i), results.(mod).bert2(i), ...
+         results.(mod).berK1(i), results.(mod).berK2(i)] = berk(zgrowth(i, :));
+
+        % Knueppel
+        [results.(mod).knueppel_stat(i), results.(mod).knueppel_pval(i)] = ...
+            alpha0_1234_NW(zgrowth(i,:), lags, prewhite);
+
+        % Mitchell-Weale
+        stat_u = MW_alpha0_1234_NW(zgrowth(i,:), lags, prewhite, z_l, z_u);
+        stat_f = freqTestInCensoredRegion(zgrowth(i,:), lags, prewhite, z_l, z_u);
+        results.(mod).MW_stat(i) = stat_u + stat_f;
+        results.(mod).MW_pval(i) = 1 - chi2cdf(results.(mod).MW_stat(i), df);
     end
 
-    clearvars stddevvar  term1_skw  term2_skw  skewvar  fcstmean fcststdev fcstskew quarterDates  momentlist horizons filename currentVar T forecastNames
-
-elseif modelfcst == 1
-    
-    
-
+    results.(mod).KS_vec  = KS_vec;
+    results.(mod).CVM_vec = CVM_vec;
 end
 
-%% KS test
+%% Galvao-Mantoan-Mitchell  (run once per model — computationally intensive)
+MC     = 1000;
+bootMC = 1000;
+rng(bootMC, 'twister');   % modern equivalent of rand/randn('seed', bootMC)
+rvec_gmm = 0:0.001:1;
 
-ksgrowth = zeros(size(zgrowth, 1), 1);
-ksgrowthpv = zeros(size(zgrowth, 1), 1);
+for m = 1:nModels
+    mod     = models{m};
+    zgrowth = zgrowth_all{m};
+    z       = zgrowth';
+    P       = size(z, 1);
+    el      = floor(P^(1/4));
+    Hz      = size(z, 2);
+    KS      = results.(mod).KS_vec(:)';   % size_statistic_h2 expects 1×H row vector
+    CVM     = results.(mod).CVM_vec(:)';  % size_statistic_h2 expects 1×H row vector
 
-for i = 1:size(zgrowth, 1) % fix the h-step ahead
+    QVrejvecs       = zeros(MC, 3);
+    CVMrejvecs      = zeros(MC, 3);
+    QVrejvecs_bonf  = zeros(MC, 3);
+    CVMrejvecs_bonf = zeros(MC, 3);
 
-    valid_data = zgrowth(i, :)';
-    valid_data = valid_data(~isnan(valid_data));   % Remove missing values
+    parfor j = 1:MC
+        stream1 = RandStream('mrg32k3a', 'seed', 4829575);
+        stream1.Substream = j;
+        [QVrej_j, CVMrej_j, QVbonf_j, CVMbonf_j] = ...
+            size_statistic_h2(z, KS, CVM, Hz, stream1, rvec_gmm, el, bootMC);
+        QVrejvecs(j,:)       = QVrej_j;
+        CVMrejvecs(j,:)      = CVMrej_j;
+        QVrejvecs_bonf(j,:)  = QVbonf_j;
+        CVMrejvecs_bonf(j,:) = CVMbonf_j;
+    end
 
-    [ksgrowth(i), ksgrowthpv(i)] = kstestu(valid_data); % first compute the empirical CDF and then run the KS test
+    results.(mod).gmm_ks  = mean(QVrejvecs,       1);
+    results.(mod).gmm_cvm = mean(CVMrejvecs,       1);
+    results.(mod).gmm_ks_bonf  = mean(QVrejvecs_bonf,  1);
+    results.(mod).gmm_cvm_bonf = mean(CVMrejvecs_bonf, 1);
 
+    fprintf('GMM done: %s\n', mod);
 end
 
-%% Rossi-Sekhposyan 2019
+%% ════════════════════════════════════════════════════════════════════════
+%%  SAVE COMPARISON RESULTS
+%%
+%%  One Excel file: each sheet = one test statistic,
+%%  columns = fanchart | qr | bvar, rows = horizons.
+%% ════════════════════════════════════════════════════════════════════════
 
-rvec = linspace(0, 1, 1000); % r is the support of the uniform distribution used to evaluate the PITs.
+horiz    = cfg.eval_horizons(:);
+filename = fullfile(evalDir, 'comparison_fcst_eval_growth.xlsx');
 
-% critical values are arranged 1, 5, 10%
-rs_boot_crit_value = repmat(struct('ks',[], 'cvm',[]), size(zinf,1), 1);
+% Helper: build side-by-side table for a given field
+buildTab = @(field) table(horiz, ...
+    results.fanchart.(field), results.qr.(field), results.bvar.(field), ...
+    'VariableNames', {'horizon', 'fanchart', 'qr', 'bvar'});
 
-rs_test_stats = repmat(struct('ks_stat', [], 'cvm_stat', []), size(zinf,1), 1);
-% if zero then implies test statistic below critical value at a given
-% significance level => passes test.
-rs_logic = repmat(struct('ks_array', [], 'cvm_array', []), size(zinf,1), 1);
+writetable(buildTab('ksgrowth'),      filename, 'Sheet', 'KS_stat');
+writetable(buildTab('ksgrowthpv'),    filename, 'Sheet', 'KS_pval');
+writetable(buildTab('rs_ks_test'),    filename, 'Sheet', 'RS_KS_stat');
+writetable(buildTab('rs_cvm_test'),   filename, 'Sheet', 'RS_CVM_stat');
+writetable(buildTab('bert1'),         filename, 'Sheet', 'Berk_rho0_stat');
+writetable(buildTab('bert2'),         filename, 'Sheet', 'Berk_rhohat_stat');
+writetable(buildTab('berK1'),         filename, 'Sheet', 'Berk_rho0_pval');
+writetable(buildTab('berK2'),         filename, 'Sheet', 'Berk_rhohat_pval');
+writetable(buildTab('knueppel_stat'), filename, 'Sheet', 'Knueppel_stat');
+writetable(buildTab('knueppel_pval'), filename, 'Sheet', 'Knueppel_pval');
+writetable(buildTab('MW_stat'),       filename, 'Sheet', 'MW_stat');
+writetable(buildTab('MW_pval'),       filename, 'Sheet', 'MW_pval');
 
-% not doing the p-values here since the distribution of the KS under RS
-% 2019 is different from the regular KS, resulting in p-values unaligned
-% with the rs_logic results.
-KS = size(zinf, 1);
-CVM = size(zinf, 1);
+% GMM summary (one row per model)
+gmm_tab = table(models', ...
+    [results.fanchart.gmm_ks;  results.qr.gmm_ks;  results.bvar.gmm_ks ], ...
+    [results.fanchart.gmm_cvm; results.qr.gmm_cvm; results.bvar.gmm_cvm], ...
+    'VariableNames', {'model','GMM_KS_std_bonf_w_wi','GMM_CVM_std_bonf_w_wi'});
+writetable(gmm_tab, filename, 'Sheet', 'GMM_summary');
 
-for i = 1:size(zinf, 1)
-
-    z = zinf(i, :)';
-    z = z(~isnan(z));
-
-    [rs_boot_crit_value(i), rs_test_stats(i), rs_logic(i), KS(i), CVM(i)] = rs_test(z, rvec);
-
-end
-
-% Currently the code exports the struct created above into a table.
-% Alternatively place each of the following things individually into the
-% table
-
-rs_ks_cv = vertcat(rs_boot_crit_value.ks);
-rs_cvm_cv = vertcat(rs_boot_crit_value.cvm);
-rs_ks_test = vertcat(rs_test_stats.ks_stat);
-rs_cvm_test = vertcat(rs_test_stats.cvm_stat);
-
-% 0 = "accept" the null. Arranged by 1, 5, 10 cv.
-rs_ks_logic = vertcat(rs_logic.ks_array);
-rs_cvm_logic = vertcat(rs_logic.cvm_array);
-
-
-
-%% Berkowitz 2001
-
-berK1growth= zeros(size(zgrowth, 1), 1);
-berK2growth= zeros(size(zgrowth, 1), 1);
-bert1growth= zeros(size(zgrowth, 1), 1);
-bert2growth= zeros(size(zgrowth, 1), 1);
-
-for i = 1:size(zgrowth, 1)
-
-    [bert1growth(i), bert2growth(i), berK1growth(i), berK2growth(i) ] = berk(zgrowth(i, :)); % run Berkowitz with rho = 0 (ber1) and with \hat{rho} (ber2)
-
-end
-
-%% Knueppel (2015)
-
-% stet the parameters
-lags = -1;                % Let lag selection be automatic
-prewhite = 0;             % No prewhitening
-
-knueppel_stat= zeros(size(zgrowth, 1), 1);
-knueppel_pval= zeros(size(zgrowth, 1), 1);
-
-for i = 1:size(zgrowth, 1)
-
-    [knueppel_stat(i), knueppel_pval(i)] = alpha0_1234_NW(zgrowth(i, :), lags, prewhite);
-
-end
-
-
-%% Mitchell-Weale (2023)
-
-% set the parameters (lags and prewhite are from Knueppel)
-z_u = 0.95;         % Upper censoring threshold
-z_l = 0.05;         % Lower censoring threshold
-df = 5;             % Four moments and the frequency
-
-MW_stat= zeros(size(zgrowth, 1), 1);
-MW_pval= zeros(size(zgrowth, 1), 1);
-
-for i = 1:size(zgrowth, 1)
-
-    stat_uncens = MW_alpha0_1234_NW(zgrowth(i, :), lags, prewhite, z_l, z_u); % same as knueppel but with ub and lb
-    stat_freq = freqTestInCensoredRegion(zgrowth(i, :), lags, prewhite, z_l, z_u);
-    MW_stat(i) = stat_uncens + stat_freq;
-    MW_pval(i) = 1 - chi2cdf(MW_stat(i) , df);
-
-end
-
-%% Galvao, Mantoan and Mitchell
-
-z = zgrowth';
-
-MC = 1000; %Number of MC replication for power exercise
-bootMC = 1000;%Number of MC replication for bootstrap CV
-randn('seed',bootMC); %#ok<*RAND>
-rand('seed',bootMC);  %#ok<*RAND>
-randn(MC,1);
-rand(MC,1);
-
-tic
-rvec = 0:0.001:1;
-
-% Number of horizons
-%H=[4, 8, 12, 24, 50, 100];
-%H = [5, 9, 13]; % because nowcast is horizon 0.
-talesstackks = nan(1,3);
-talesstackcvm = nan(1,3);
-tableks_bonf= nan(1,3);
-tablecvm_bonf= nan(1,3);
-
-P = size(z, 1);
-%R = Rinvec;
-%T = R + P;
-
-% loop over the different horizons
-%for h=1:size(H,2)
-% Hsel=H(h);
-% disp(Hsel)
-
-el = floor (P^(1/4));
-
-QVrejvecs= zeros(MC,3);
-CVMrejvecs= zeros(MC,3);
-QVrejvecs_bonf= zeros(MC,3);
-CVMrejvecs_bonf= zeros(MC,3);
-Hz=size(z,2);
-
-parfor j = 1:MC
-    stream1 = RandStream('mrg32k3a','seed',4829575);
-    stream1.Substream = j;
-    [QVrejvecsj,CVMrejvecsj,QVrejvecs_bonfj,CVMrejvecs_bonfj]=size_statistic_h2(z, KS, CVM, Hz ,stream1,rvec,el, bootMC) ;
-    QVrejvecs(j,:)=QVrejvecsj;
-    CVMrejvecs(j,:)=CVMrejvecsj;
-    %QVrejvecs_h(j,:)=QVrejvecs_hj;
-    %CVMrejvecs_h(j,:)=CVMrejvecs_hj;
-    QVrejvecs_bonf(j,:)=QVrejvecs_bonfj;
-    CVMrejvecs_bonf(j,:)=CVMrejvecs_bonfj;
-    %QVrejvecs_rs(j,:)=QVrejvecsj_rs;
-    %CVMrejvecs_rs(j,:)=CVMrejvecsj_rs;
-end
-
-%tableksh=struct(append('h','_',num2str(h)),mean(QVrejvecs_h,1));
-%tablecvmh=struct(append('h','_',num2str(h)),mean(CVMrejvecs_h,1));
-tableks_bonf=mean(QVrejvecs_bonf,1);
-tablecvm_bonf=mean(CVMrejvecs_bonf,1);
-talesstackks=mean(QVrejvecs,1);
-talesstackcvm=mean(CVMrejvecs,1);
-%talesks_rs(h,:)=mean(QVrejvecs_rs,1);
-%talescvm_rs(h,:)=mean(CVMrejvecs_rs,1);
-
-timeElapsed = toc;
-%end
-
-tab_maxsup = [
-    talesstackks(:,1),  tableks_bonf(:,1), ...
-    talesstackks(:,2),  tableks_bonf(:,2), ...
-    talesstackks(:,3),  tableks_bonf(:,3);
-    talesstackcvm(:,1), tablecvm_bonf(:,1), ...
-    talesstackcvm(:,2), tablecvm_bonf(:,2), ...
-    talesstackcvm(:,3), tablecvm_bonf(:,3)
-    ];
-
-% rows 1-3: KS test statistic at horizons 4, 8 and 12
-% rows 4-6: CvM test statistic at horizons 4, 8 and 12
-% columns 1, 4, 7: standard sup tests with three weights - none, w, and
-% alternative wi
-% columns 2, 5, 8: robust sup tests with the three weighting schemes
-% columns 3, 6, 9: Bonferroni-adjusted tests with the three weightings.
-
-% each of the entries tells you frequency of rejects so tab_maxsup(1,1) =
-% KS test stat is rejected 48% of the time.
-
-tab_maxsup2= [talesstackks(:,1), tableks_bonf(:,1) talesstackcvm(:,1)  tablecvm_bonf(:,1);
-    talesstackks(:,2)  tableks_bonf(:,2) talesstackcvm(:,2) tablecvm_bonf(:,2);
-    talesstackks(:,3)  tableks_bonf(:,3) talesstackcvm(:,3)  tablecvm_bonf(:,3)];
-
-
-%% Save the data
-
-% Define Excel filename once using the model name
-filename = fullfile(outputFolder, sprintf('%s_fcst_eval_growth.xlsx', modellist{modelfcst + 1}));
-horiz = (0:12)';
-
-% Build table using the variables (assumed to be column vectors of length 13)
-T = table(horiz, ...
-    ksgrowth, ksgrowthpv, rs_ks_cv, rs_cvm_cv, ...
-    rs_ks_test, rs_cvm_test, rs_ks_logic, rs_cvm_logic, ...
-    bert1growth, bert2growth, ...
-    berK1growth, berK2growth, ...
-    knueppel_stat, knueppel_pval, ...
-    MW_stat, MW_pval, ...
-    'VariableNames', {'horiz', ...
-    'ksgrowth', 'ksgrowthpv', ...
-    'rs_ks_cv','rs_cvm_cv', ...
-    'rs_ks_test', 'rs_cvm_test', 'rs_ks_logic', 'rs_cvm_logic',...
-    'ber_1', 'ber_2', ...
-    'ber_1pv', 'ber_2pv', ...
-    'knueppel_stat', 'knueppel_pval', ...
-    'MW_stat', 'MW_pval'});
-
-% Note that rs_ks_logic and rs_cvm_logic will produce FALSE and TRUE
-% statements within the excel file. FALSE = fails to reject the null.
-% TRUE = accept the alternative.
-
-% Write table to Excel
-writetable(T, filename);
-
-rowNames = {'KS','CVM'};
-varNames = { 'Standard', 'Bonf', 'Standard_w', 'Bonferroni_w', 'Standard_wi', 'Bonferroni_wi'};
-
-% saving the GMM test results
-gmmFilename = fullfile(outputFolder, sprintf('GMM_growth_%s.xlsx', modellist{modelfcst + 1}));
-
-GMM_T    = array2table(tab_maxsup, 'RowNames', rowNames, 'VariableNames', varNames);
-
-writetable(GMM_T, gmmFilename, 'Sheet', 'MaxSup', 'WriteRowNames', true);
-
-% write tab_maxsup2_tbl to sheet “MaxSup2”
-writematrix(tab_maxsup2, gmmFilename, 'Sheet', 'MaxSup2');
-
-
-
+fprintf('\n── DONE: comparison saved to %s ──\n', filename);

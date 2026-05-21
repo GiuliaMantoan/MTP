@@ -196,7 +196,11 @@ for spec = 1:nSpec
         for ii = 1:n_act
             interm(1:(n_act-ii+1), ii) = act_filt(ii:end);
         end
-        actualvar = interm(1:cfg.horizons, :)';   % nOrigins × horizons
+        actualvar_raw = interm(1:cfg.horizons, :)';   % n_act × horizons
+        % Pad/trim to exactly nOrigins rows so reshape at WIS step is valid
+        actualvar = NaN(nOrigins, cfg.horizons);
+        nr = min(n_act, nOrigins);
+        actualvar(1:nr, :) = actualvar_raw(1:nr, :);
     end
 
     %% ── Extract predictors ───────────────────────────────────────────────
@@ -311,7 +315,7 @@ lastOriDT     = datetime(dateNumeric_full(last_origin), 'ConvertFrom','datenum')
 months_origin = StartEstDT : calmonths(1) : lastOriDT;   % 1 × nOrigins
 
 Xorig   = explvar(idx_est:last_origin, :);
-Xfull   = [ones(nOrigins,1), Xorig];   % nOrigins × V
+Xfull   = [ones(nOrigins-1,1), Xorig];   % nOrigins × V
 vLabels = [{'Constant'}, ...
     cellfun(@(s) strrep(s,'_',' '), combo_specifications(spec_to_use,2:end), 'uni',0)];
 
@@ -450,11 +454,11 @@ for h_plot = cfg.hPlot
     ax  = gca; hold(ax,'on');
     plotFanBands(ax, tgt_v, Q_v);
     plot(ax, tgt_v, Q_v(:,4), '--','Color',[0 0 0.7],'LineWidth',1.2,'DisplayName','50^{th}');
-    plot(ax, actualDT(oos_mask), actual_var(oos_mask), 'k', 'LineWidth',1.25, 'DisplayName','Outturn');
+    plot(ax, actualDT(oos_mask)+calmonths(h_plot - 1), actual_var(oos_mask), 'k', 'LineWidth',1.25, 'DisplayName','Outturn');
     styleAxis(ax, tgt_dates, 2);
     legend(ax,'show','Location','northoutside','Orientation','horizontal'); legend boxoff;
-    set(ax,'FontSize',14);
-    title(ax, sprintf('Inflation (CPI) — OOS fan  |  h = %d months ahead', h_plot-1));
+    set(ax,'FontSize',12);
+    %title(ax, sprintf('Inflation (CPI) — OOS fan  |  h = %d months ahead', h_plot-1));
     saveFig(fig, fanDir, sprintf('inflation_fanchart_OOS_h%d.png', h_plot));
 end
 
@@ -462,7 +466,7 @@ end
 %%  8.  LAST-ORIGIN FORWARD FAN  (1–36 months ahead)
 %% ════════════════════════════════════════════════════════════════════════
 
-t_last     = nOrigins;
+t_last     = nOrigins-1;
 lastOrigDT = months_origin(t_last);
 n_fwd      = min(36, cfg.horizons - 1);
 fcst_fwd   = lastOrigDT + calmonths(1:n_fwd);
@@ -479,7 +483,7 @@ xlim(ax, [actualDT(max(end-120,1)), fcst_fwd(end)+calmonths(1)]);
 styleAxis(ax, fcst_fwd, 2);
 legend(ax,'show','Location','northoutside','Orientation','horizontal'); legend boxoff;
 set(ax,'FontSize',13);
-title(ax, sprintf('Inflation (CPI) — last-origin fan  |  1–%d months ahead', n_fwd));
+%title(ax, sprintf('Inflation (CPI) — last-origin fan  |  1–%d months ahead', n_fwd));
 saveFig(fig, fanDir, sprintf('inflation_fanchart_OOS_lastOrigin_%dmo.png', n_fwd));
 
 %% ════════════════════════════════════════════════════════════════════════
@@ -489,7 +493,7 @@ saveFig(fig, fanDir, sprintf('inflation_fanchart_OOS_lastOrigin_%dmo.png', n_fwd
 contrib    = NaN(nOrigins, Qn, numel(cfg.hPlot), V);
 pred_check = NaN(nOrigins, Qn, numel(cfg.hPlot));
 
-for t = 1:nOrigins
+for t = 1:nOrigins-1
     for ih = 1:numel(cfg.hPlot)
         B = coeffqr(:,:, cfg.hPlot(ih), t);
         pred_check(t,:,ih) = Xfull(t,:) * B;
@@ -510,9 +514,9 @@ for qi = 1:numel(cfg.qDecomp)
 
         fig = figure('Units','normalized','Position',[0.2 0.15 0.6 0.7],'Color','w');
         ax  = gca; hold(ax,'on');
-        b   = bar(ax, months_origin, C, 'stacked','BarWidth',0.7);
+        b   = bar(ax, months_origin, C(1:end-1,:), 'stacked','BarWidth',0.7);
         for j = 1:V, b(j).FaceColor = cmap(j,:); end
-        hl  = plot(ax, months_origin, qline, 'k-','LineWidth',1.3, ...
+        hl  = plot(ax, months_origin, qline(1:end-1,:), 'k-','LineWidth',1.3, ...
                    'DisplayName',sprintf('q=%.0f^{th}', cfg.qDecomp(qi)*100));
         yline(ax,0,'k-','LineWidth',0.75,'HandleVisibility','off');
         grid(ax,'on');
@@ -525,6 +529,7 @@ for qi = 1:numel(cfg.qDecomp)
         title(ax, sprintf('Historical decomposition — inflation  |  h=%d, q=%.0f^{th}', ...
               h_plot-1, cfg.qDecomp(qi)*100));
         hold(ax,'off');
+        ax = gca;
         saveFig(fig, figDir, sprintf('inflation_decomp_OOS_h%d_q%d.png', ...
                 h_plot, round(cfg.qDecomp(qi)*100)));
     end

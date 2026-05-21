@@ -501,25 +501,25 @@ for h_plot = cfg.hPlot
 
     % --- Actual GDP: OOS period only (from first valid target date onward) -
     oos_mask = actualDT >= tgt_v(1);
-    plot(ax, actualDT(oos_mask), actual_var(oos_mask), 'k', 'LineWidth',1.25, 'DisplayName','Outturn');
+    plot(ax, actualDT(oos_mask)+calquarters(h_plot - 1), actual_var(oos_mask), 'k', 'LineWidth',1.25, 'DisplayName','Outturn');
 
     % --- Style axes (sets xlim, grid, year ticks) ------------------------
     styleAxis(ax, tgt_dates, 2);
 
     % --- Grey Covid rectangle (pushed to background) ---------------------
-    yl = ylim(ax);
+    yl = [-10, 8];%ylim(ax);
     covid_rect = fill(ax, ...
-        [covid_start_dt, covid_end_dt, covid_end_dt, covid_start_dt], ...
+        [covid_start_dt+calquarters(h_plot - 1), covid_end_dt+calquarters(h_plot - 1), covid_end_dt+calquarters(h_plot - 1), covid_start_dt+calquarters(h_plot - 1)], ...
         [yl(1), yl(1), yl(2), yl(2)], ...
         [0.75 0.75 0.75], 'EdgeColor','none', 'FaceAlpha',0.4, ...
-        'DisplayName','Covid period (Q1 2020–Q4 2021)');
+        'DisplayName','Covid period');
     uistack(covid_rect, 'bottom');
     ylim(ax, yl);   % restore ylim in case fill expanded it
 
     legend(ax,'show','Location','northoutside','Orientation','horizontal');
     legend boxoff;
-    set(ax,'FontSize',14);
-    title(ax, sprintf('GDP (YoY) — OOS rolling fan  |  h = %d quarters ahead', h_plot-1));
+    set(ax,'FontSize',12);
+    %title(ax, sprintf('GDP  h = %d quarters ahead', h_plot-1));
     saveFig(fig, fanDir, sprintf('gdp_fanchart_OOS_h%d.png', h_plot));
 end
 
