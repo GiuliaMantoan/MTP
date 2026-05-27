@@ -13,16 +13,16 @@ set(0,'defaultAxesLineStyleOrder','-|--|:', 'defaultLineLineWidth',1) % line sty
 rng('default'); % defaul random number generateor 
 rng(0);     
 
-cd 'C:\Users\k2368907\Dropbox\BoE-KCL Macro Forecasting\' % chage here the cd 
-addpath('Data\') % data input
-addpath('Codes\intermediate_codes\')  % intemediate code (data loading..)
-addpath('Codes\functions\')   
-addpath('Codes\functions\azzalini')  % skew t functions 
-outputFolder = fullfile(pwd, 'Outputs/');
-
+scriptDir    = fileparts(mfilename('fullpath'));
+addpath(fullfile(scriptDir, 'intermediate_codes'));
+addpath(fullfile(scriptDir, 'functions'));
+addpath(fullfile(scriptDir, 'functions', 'azzalini'));
+outputFolder = fullfile(scriptDir, 'Outputs');
+evalDir      = fullfile(outputFolder, 'forecast_evaluation');
+if ~exist(evalDir, 'dir'), mkdir(evalDir); end
 
 % file names
-fullFileName = fullfile('Data', 'GaRDataRaw.xlsx'); % raw data 
+fullFileName = fullfile(scriptDir, 'IaRDataRaw_monthly_M.xlsx'); % raw data
 
 %% Import Data
 
@@ -34,7 +34,7 @@ start_date = datetime('31-Mar-2010', 'InputFormat', 'dd-MMM-yyyy'); % first fore
 end_date   = datetime('30-Sep-2022', 'InputFormat', 'dd-MMM-yyyy'); % last date with actual data
 end_fcst   = datetime('30-Sep-2025', 'InputFormat', 'dd-MMM-yyyy'); % forecast end date
 covid_date = datetime('30-Jun-2020', 'InputFormat', 'dd-MMM-yyyy'); 
-varnames = {'g4Infl'}; % actual data variables you want to import 
+varnames = {'g4cpi'}; % actual data variables you want to import 
 ctrynames = {'UK'}; % actual data country you want to import 
 momentlist = {'fcstmean', 'fcststdev', 'fcstskew'}; % moments for OLS and skewt
 
@@ -55,30 +55,17 @@ boefsctdata; % this code focus only on inflation (potentially we can extend it t
 % colomn 4 represent the forecasted mode inflation starting
 % from Q4-2004 onward.
 
-actualdata;
+actualdata_monthly;
 
-% actualvar %
+% actualvar is 37 × n_monthly after actualdata_monthly.
+% Reduce to 13 fan-chart horizons × quarter-end origins only (Mar/Jun/Sep/Dec).
+% dateVec is preserved by actualdata_monthly so we can use it for filtering.
+qtr_mask_eval = ismember(month(dateVec), [3 6 9 12]);
+actualvar     = actualvar(1:13, qtr_mask_eval);   % 13 horizons × nQOrig
 
-% rows: ACTUAL inflation x-quarter ahead wrt the forecast period with x = 1, .. , 13 
-% cols represents the period in which when the forecast are done. 
-% example: (say that the first period is Q3-2004) colomn 1 represent the ACTUAL realization of inflation starting
-% from Q3-2004 onward. colomn 2 represent the ACTUAL realization of inflation starting
-% from Q4-2004 onward... and so on 
-
-%% Covid treatment 
-
-% drop the colomns related to covid (all zeros) Q2-2020
-covid = (year(covid_date) - year(start_date)) * 4 + (ceil(month(covid_date)/3) - ceil(month(start_date)/3));
-
-% Drop column 63 of out_inf if out_inf has at least 63 columns
-if size(actualvar, 2) >= (covid +1)
-    actualvar(:, (covid +1)) = [];
-end
-
-% Drop columns (63*3 + 1) to (63*3 + 4) of mtestdata if mtestdata has at least 190 columns
-if size(mtestdata, 2) >= (covid*3 + 1)
-    mtestdata(:, (covid*3 + 1):(covid*3 + 3)) = [];
-end
+% actualvar layout:
+% rows 1-13 : ACTUAL inflation 0- to 12-quarters ahead
+% cols      : one per quarter-end origin (Mar 2010, Jun 2010, …)
  
 
 %% Import the PITs 
@@ -155,32 +142,34 @@ if modelfcst == 0
     % make sure no NaN col 
     zinf = zinf(:, ~all(isnan(zinf), 1));
 
-    % save the outcome for Boe Forecast
-    fcstmean   = [meanvar(:,1:covid),   zeros(size(meanvar,1),1),   meanvar(:,covid+1:end)];
-    fcststdev = [stddevvar(:,1:covid), zeros(size(stddevvar,1),1), stddevvar(:,covid+1:end)];
-    fcstskew   = [skewvar(:,1:covid),   zeros(size(skewvar,1),1),   skewvar(:,covid+1:end)];
+    % save the outcome for Boe Forecast (no covid zero-column for inflation)
+    fcstmean  = meanvar;
+    fcststdev = stddevvar;
+    fcstskew  = skewvar;
 
     % settings
-    quarterDates = start_date:calmonths(3):end_date;
+    nQOrig_boe   = size(fcstmean, 2);
+    quarterDates = start_date + calmonths(3*(0:nQOrig_boe-1));
     momentlist = {'fcstmean', 'fcststdev', 'fcstskew'};
     horizons = 13;
-    filename = fullfile(outputFolder, 'boe.xlsx');
+    filename = fullfile('boe.xlsx');
 
     % Loop over each variable in the list
+    forecastNames = cellstr(strcat('h_', string(0:horizons-1)));
     for i = 1:length(momentlist)
-        
-        % Get the current forecast data
+
+        % Get the current forecast data  (13 × nCols)
         currentVar = eval(momentlist{i});
-            
-        % Create the table with quarterly dates as the first column
-        T = [table(quarterDates', 'VariableNames', {'Dates'}), array2table(currentVar')];
-            
-        % Rename the forecast columns from the second column onward as h_0, h_1, ..., h_12
-        forecastNames = strcat("h_", string(0:horizons-1));
-        T.Properties.VariableNames(2:end) = cellstr(forecastNames);
-        % Export the table to a specific sheet in the Excel file
+        nCols  = size(currentVar, 2);
+        qDates = start_date + calmonths(3*(0:nCols-1));   % 1×nCols datetime
+
+        % Build table: nCols rows × (1 date + 13 horizon) cols
+        T = array2table(currentVar', 'VariableNames', forecastNames);
+        T.Dates = qDates(:);
+        T = T(:, [{'Dates'}, forecastNames]);
+
         writetable(T, filename, 'Sheet', momentlist{i});
-    
+
     end
 
     clearvars stddevvar  term1_skw  term2_skw  skewvar  fcstmean fcststdev fcstskew quarterDates  momentlist horizons filename currentVar T forecastNames 
@@ -388,7 +377,7 @@ end
 %% Save the data
 
 % Define Excel filename once using the model name
-filename = fullfile(outputFolder, sprintf('%s_fcst_eval.xlsx', modellist{modelfcst + 1}));
+filename = fullfile(evalDir, sprintf('%s_fcst_eval.xlsx', modellist{modelfcst + 1}));
 horiz = (0:12)';
 
 % Build table using the variables (assumed to be column vectors of length 13)

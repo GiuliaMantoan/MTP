@@ -325,6 +325,13 @@ save(fullfile(outDir,'explanatoryvar_inflation_OOS.mat'), 'explvar');
 %%  5.  DISTRIBUTION FITTING  (for spec_to_use only)
 %% ════════════════════════════════════════════════════════════════════════
 
+% Restrict distribution fitting to quarter-end origins (Mar/Jun/Sep/Dec)
+% months_origin has n_act elements (actual data range); qtr_idx indexes into it
+qtr_mask = ismember(month(months_origin), [3 6 9 12]);
+qtr_idx  = find(qtr_mask);
+nQOrig   = numel(qtr_idx);
+fprintf('Distribution fitting on %d quarter-end origins (of %d monthly).\n', nQOrig, numel(months_origin));
+
 switch cfg.model_selection
 
     case 2  %────────────────── Skew-t (Azzalini-Capitanio) ───────────────
@@ -334,7 +341,8 @@ switch cfg.model_selection
         fcststdev = NaN(nOrigins, cfg.horizons);
         fcstskew  = NaN(nOrigins, cfg.horizons);
 
-        for t = 1:nOrigins
+        for ti = 1:nQOrig
+            t = qtr_idx(ti);
             for h = 1:cfg.horizons
                 [lc_skt(t,h), sc_skt(t,h), sh_skt(t,h), df_skt(t,h)] = ...
                     QuantilesInterpolation(pred_q(t,:,h), cfg.quantiles);
@@ -352,11 +360,12 @@ switch cfg.model_selection
         fcstskew  = NaN(nOrigins, cfg.horizons);
 
         for h = 1:cfg.horizons
-            semi_param_distr(:,:,h) = QR_sm(pred_q(:,:,h), cfg.quantiles);
-            fcstmean(:,h)  = mean(semi_param_distr(:,:,h), 2);
-            fcststdev(:,h) = std( semi_param_distr(:,:,h), 0, 2);
-            fcstskew(:,h)  = skewness(semi_param_distr(:,:,h), 0, 2);
-            for t = 1:nOrigins
+            semi_param_distr(qtr_idx,:,h) = QR_sm(pred_q(qtr_idx,:,h), cfg.quantiles);
+            fcstmean(qtr_idx,h)  = mean(semi_param_distr(qtr_idx,:,h), 2);
+            fcststdev(qtr_idx,h) = std( semi_param_distr(qtr_idx,:,h), 0, 2);
+            fcstskew(qtr_idx,h)  = skewness(semi_param_distr(qtr_idx,:,h), 0, 2);
+            for ti = 1:nQOrig
+                t = qtr_idx(ti);
                 [f,x] = ecdf(semi_param_distr(t,:,h));
                 blk = nan(20001,2);  blk(1:numel(x),:) = [x, f];
                 empirical_cdf(:,:,t,h) = blk;
@@ -366,7 +375,8 @@ switch cfg.model_selection
         % CRPS for selected spec
         crps_results = NaN(nOrigins, cfg.horizons);
         for h = 1:cfg.horizons
-            for t = 1:nOrigins
+            for ti = 1:nQOrig
+                t = qtr_idx(ti);
                 crps_results(t,h) = crps(semi_param_distr(t,:,h), actualvar(t,h), 2);
             end
         end
@@ -378,8 +388,9 @@ switch cfg.model_selection
         fcststdev = NaN(nOrigins, cfg.horizons);
         fcstskew  = NaN(nOrigins, cfg.horizons);
 
-        for t = 1:nOrigins
-            fprintf('TPN fit: origin %d/%d\n', t, nOrigins);
+        for ti = 1:nQOrig
+            t = qtr_idx(ti);
+            fprintf('TPN fit: origin %d/%d\n', ti, nQOrig);
             for h = 1:cfg.horizons
                 param_tpn(t,:,h) = fit_tpn_to_quantiles_SM(pred_q(t,:,h), cfg.quantiles);
                 fcstmean(t,h)    = two_part_normal_mean(    param_tpn(t,:,h));
@@ -418,14 +429,15 @@ switch cfg.model_selection
             'fcstmean','fcststdev','fcstskew');
 end
 
-% Export moments to Excel  (all model types)
+% Export moments to Excel  (quarterly origins only — matches distribution fitting)
 xlsFile   = fullfile(outDir, sprintf('%s_best_spec_inflation.xlsx', ...
     cfg.modellist{cfg.model_selection}));
 colNames  = cellstr(strcat('h_', string(0:cfg.horizons-1)));
+mList = {'fcstmean','fcststdev','fcstskew'};
 for i = 1:3
-    mList = {'fcstmean','fcststdev','fcstskew'};
-    tbl   = [table(months_origin', 'VariableNames',{'Dates'}), ...
-             array2table(eval(mList{i}), 'VariableNames', colNames)];
+    tmp = eval(mList{i});
+    tbl = [table(months_origin(qtr_idx)', 'VariableNames',{'Dates'}), ...
+           array2table(tmp(qtr_idx,:), 'VariableNames', colNames)];
     writetable(tbl, xlsFile, 'Sheet', mList{i});
 end
 

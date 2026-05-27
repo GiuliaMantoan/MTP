@@ -48,10 +48,11 @@ yearVec  = str2double(extractBetween(rawDates,1,4));
 monthVec = str2double(extractAfter  (rawDates,'m'));
 dateVec  = datetime(yearVec, monthVec, 1); % gives e.g. 2024-09-01, 2024-10-01, …
 
-% 2) Filter to the period 2004-09-01 through 2022-09-30
-% start_date = datetime(2004,1,1);
-% end_date   = datetime(2024,12,1);
-keepIdx    = (dateVec >= start_date) & (dateVec <= end_fcst);
+% 2) Filter by year-month to avoid end-of-month vs start-of-month mismatch
+ym_data  = year(dateVec)*12 + month(dateVec);
+ym_start = year(start_date)*12 + month(start_date);
+ym_fcst  = year(end_fcst)*12  + month(end_fcst);
+keepIdx  = (ym_data >= ym_start) & (ym_data <= ym_fcst);
 
 T_filtered = T(keepIdx, :);
 dateVec    = dateVec(keepIdx);             % now only the months you care about
@@ -72,4 +73,4 @@ end
 % take the first 37 rows → your 0- to 36-month-ahead actuals
 actualvar = interm(1:37, :);
 
-clearvars -except mtestdata start_date end_date covid_date ctrynames varnames fullFileName actualvar momentlist outputFolder
+clearvars -except mtestdata start_date end_date end_fcst covid_date ctrynames varnames fullFileName actualvar momentlist outputFolder dateVec evalDir
