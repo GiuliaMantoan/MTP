@@ -84,7 +84,7 @@ cfg.var.fci     = {'bond_spread'};                % financial conditions
 
 % Distribution model
 %   2 = Skew-t  |  3 = Semi-parametric  |  4 = Two-piece Normal
-cfg.model_selection = 2;
+cfg.model_selection = 3;
 cfg.modellist       = {'ols', 'skewt', 'semi-param', 'two-piece-normal'};
 
 % Spec selection
@@ -524,8 +524,10 @@ for qi = 1:numel(cfg.qDecomp)
         C      = squeeze(contrib(:, q_idx_d(qi), ih, :));
         qline  = squeeze(pred_check(:, q_idx_d(qi), ih));
 
-        fig = figure('Units','normalized','Position',[0.2 0.15 0.6 0.7],'Color','w');
-        ax  = gca; hold(ax,'on');
+        fig = figure('Units','centimeters','Position',[2 2 24 14],'Color','w');
+        % Reserve bottom margin for legend, shrink axes to top 80%
+        ax  = axes('Parent',fig,'Position',[0.08 0.22 0.90 0.68]);
+        hold(ax,'on');
         b   = bar(ax, months_origin, C(1:end-1,:), 'stacked','BarWidth',0.7);
         for j = 1:V, b(j).FaceColor = cmap(j,:); end
         hl  = plot(ax, months_origin, qline(1:end-1,:), 'k-','LineWidth',1.3, ...
@@ -534,14 +536,16 @@ for qi = 1:numel(cfg.qDecomp)
         grid(ax,'on');
         ax.XTick = months_origin(1):calyears(2):months_origin(end);
         ax.XAxis.TickLabelFormat = 'yyyy';
-        set(ax,'FontSize',13);
-        legend(ax, [b(:)', hl], ...
-               [vLabels, {sprintf('q=%.0f^{th}', cfg.qDecomp(qi)*100)}], ...
-               'Location','southoutside','Orientation','horizontal','Box','off');
+        set(ax,'FontSize',10);
         title(ax, sprintf('Historical decomposition — inflation  |  h=%d, q=%.0f^{th}', ...
-              h_plot-1, cfg.qDecomp(qi)*100));
+              h_plot-1, cfg.qDecomp(qi)*100), 'FontSize',10);
         hold(ax,'off');
-        ax = gca;
+        % Legend below axes with small font so all labels fit
+        lgd = legend(ax, [b(:)', hl], ...
+               [vLabels, {sprintf('q=%.0f^{th}', cfg.qDecomp(qi)*100)}], ...
+               'Orientation','horizontal','Box','off','FontSize',7.5, ...
+               'NumColumns', V+1);
+        lgd.Position = [0.05, 0.01, 0.90, 0.10];
         saveFig(fig, figDir, sprintf('inflation_decomp_OOS_h%d_q%d.png', ...
                 h_plot, round(cfg.qDecomp(qi)*100)));
     end

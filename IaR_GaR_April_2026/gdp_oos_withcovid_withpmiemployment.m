@@ -6,6 +6,11 @@
 %  Updated : April 2026
 %
 %  PIPELINE
+%    Runs for EACH dependent variable in dep_variants:
+%      dep_variants{1} = 'g4rgdp'        → outputs saved with suffix _OOS
+%      dep_variants{2} = 'g4rgdp_first'  → outputs saved with suffix _FR
+%
+%    For each dep var:
 %    1. Generate all variable-category combinations  (combo_specifications)
 %    2. For each spec: load data, estimate QR (excluding Covid quarters), build pred. quantiles
 %    3. Select best spec via Weighted Interval Score (WIS)
@@ -22,9 +27,6 @@
 %  SPEC SELECTION    (cfg.use_best_spec)
 %    1 = auto: pick spec with lowest average WIS across all horizons
 %    0 = manual: use cfg.specplot
-%
-%  Add alternatives to each cfg.var.* cell to search over more specs, e.g.:
-%    cfg.var.current_act = {'pmi_out_long', 'mgdp_yoy'};
 %
 %  COVID TREATMENT
 %    Quarters Q1 2020 – Q1 2022 are excluded from both Y_LP and X at every
@@ -63,33 +65,16 @@ cfg.startT   = datenum(1980, 6, 30);
 cfg.endT     = datenum(2026, 3, 31);
 cfg.startEst = datenum(2004, 3, 31);    % first forecast origin
 
-% Dependent variable
-cfg.var.dep = {'g4rgdp'};
-
 % Variable categories — list alternatives in each cell to search over specs.
 % The ndgrid below generates every combination automatically.
-% e.g. two options in current_act × two in fci = 4 specs total.
-
 cfg.var.current_act = {'mgdp_yoy'};               % current economic activity
-%                      'pmi_out_long'              % (alternative: PMI output)
-%                      'pmi_out_fut_long'          % (alternative: PMI output future)
-
 cfg.var.leverage    = {'global_credit'};           % leverage / credit-to-GDP growth
-%                      'delta_3y_credit_to_gdp_all'% (alternative: UK 3y credit growth)
-
 cfg.var.fci         = {'ciss_uk'};                 % financial conditions
-%                      'market_vol_uk'             % (alternative: market volatility)
-%                      'yield_curve_slope'         % (alternative: yield curve slope)
-
 cfg.var.macro_cond  = {'g4_import_deflator_fuel'}; % nominal / external indicator
-%                      'g4infl'                    % (alternative: G4 inflation)
-%                      'inflation_expectations'    % (alternative: infl expectations)
-
-cfg.var.labour      = {'labour'};                  % labour-market indicator
 
 % Distribution model
 %   2 = Skew-t  |  3 = Semi-parametric  |  4 = Two-piece Normal
-cfg.model_selection = 2;
+cfg.model_selection = 3;
 cfg.modellist       = {'ols', 'skewt', 'semi-param', 'two-piece-normal'};
 
 % Spec selection
@@ -98,8 +83,19 @@ cfg.specplot      = 1;       % used when use_best_spec = 0
 cfg.horizons_wis  = [1 5 9]; % horizons for per-horizon WIS table
 
 % Covid sample exclusion — both Y_LP and X rows in this window are dropped.
-cfg.covidStart = datenum(2020, 3, 31);   % Q1 2020 (first excluded quarter)
-cfg.covidEnd   = datenum(2022, 3, 31);  % Q1 2022 (last  excluded quarter)
+cfg.covidStart     = datenum(2020, 3, 31);   % Q1 2020 (first excluded quarter)
+cfg.covidEnd       = datenum(2022, 3, 31);   % Q1 2022 (last  excluded quarter)
+%
+% Lag-contamination buffer: predictor variables are 1-quarter lags, and many
+% are year-on-year (YoY) measures.  At origins just after covidEnd, the lagged
+% predictor values still reference Covid-affected quarters (e.g. mgdp_yoy at
+% Q2-2022 compares to Q2-2021 rebound → extreme positive).  Setting
+% cfg.covidLagBuffer = 4 extends the exclusion mask by 4 additional quarters
+% (one full year), covering the entire YoY base-effects window.
+% Both training rows AND prediction origins inside this extended window are
+% excluded, preventing extreme Covid-adjacent predictor values from biasing
+% the upper tail of the forecast distribution.
+cfg.covidLagBuffer = 4;                      % extra quarters beyond covidEnd
 
 % Dependent-variable form
 cfg.h_step_gdp = 0;  % 0 = year-on-year growth  |  1 = h-step annualised growth
@@ -125,17 +121,62 @@ set(0, 'defaultLineLineWidth',       1);
 rng('default');
 
 %% ════════════════════════════════════════════════════════════════════════
+%%  DEPENDENT-VARIABLE LOOP
+%%    dep_variants{1} = 'g4rgdp'        → suffix 'OOS'  (revised GDP)
+%%    dep_variants{2} = 'g4rgdp_first'  → suffix 'FR'   (first-release GDP)
+%% ════════════════════════════════════════════════════════════════════════
+
+dep_variants = {'g4rgdp'};%{'g4rgdp',  'g4rgdp_first'};
+dep_suffixes = {'OOS'};%,     'FR'};
+
+for dv_loop = 1:numel(dep_variants)
+
+cfg.var.dep = {dep_variants{dv_loop}};
+dep_sfx     = dep_suffixes{dv_loop};
+
+fprintf('\n════════════════════════════════════════════════════════════\n');
+fprintf('  Dep var: %-20s   suffix: %s\n', cfg.var.dep{1}, dep_sfx);
+fprintf('════════════════════════════════════════════════════════════\n');
+
+%% ── Quick data sanity check ──────────────────────────────────────────────
+% Load the dep var directly to verify units before running the full pipeline.
+% g4rgdp (revised) typically ranges from about -25% to +25% (quarterly YoY).
+% If g4rgdp_first is in levels, index form, or different units, the range
+% below will look wrong — fix the Excel sheet before proceeding.
+try
+    tmp_tbl = readtable(dataFile, 'Sheet', cfg.var.dep{1});
+    tmp_uk  = tmp_tbl.UK;
+    tmp_uk  = tmp_uk(tmp_uk < 1e8 & ~isnan(tmp_uk));   % strip 123456789 sentinels
+    fprintf('  Data check — %s (UK column):\n', cfg.var.dep{1});
+    fprintf('    N obs  = %d\n',   numel(tmp_uk));
+    fprintf('    Min    = %.3f\n', min(tmp_uk));
+    fprintf('    Max    = %.3f\n', max(tmp_uk));
+    fprintf('    Mean   = %.3f\n', mean(tmp_uk));
+    if max(abs(tmp_uk)) > 50
+        warning('*** %s values exceed ±50 — check units (should be YoY %% pts). ***', ...
+                cfg.var.dep{1});
+    end
+    if max(abs(tmp_uk)) < 5 && numel(tmp_uk) > 10
+        warning('*** %s values all within ±5 — may be decimal fractions not pct pts. ***', ...
+                cfg.var.dep{1});
+    end
+    clear tmp_tbl tmp_uk
+catch ME
+    warning('Could not pre-load %s for sanity check: %s', cfg.var.dep{1}, ME.message);
+end
+
+%% ════════════════════════════════════════════════════════════════════════
 %%  1.  GENERATE SPEC COMBINATIONS
 %% ════════════════════════════════════════════════════════════════════════
 
-[i0,i1,i2,i3,i4,i5] = ndgrid( ...
+[i0,i1,i2,i3,i4] = ndgrid( ...
     1:numel(cfg.var.dep),         1:numel(cfg.var.current_act), ...
     1:numel(cfg.var.leverage),    1:numel(cfg.var.fci),         ...
-    1:numel(cfg.var.macro_cond),  1:numel(cfg.var.labour));
+    1:numel(cfg.var.macro_cond));
 
 vars = { cfg.var.dep(i0(:)),         cfg.var.current_act(i1(:)), ...
          cfg.var.leverage(i2(:)),    cfg.var.fci(i3(:)),         ...
-         cfg.var.macro_cond(i4(:)),  cfg.var.labour(i5(:)) };
+         cfg.var.macro_cond(i4(:)) };
 for k = 1:numel(vars)
     if size(vars{k}, 2) > 1, vars{k} = vars{k}.'; end
 end
@@ -198,8 +239,20 @@ for spec = 1:nSpec
         idx_est          = find(dateNumeric == cfg.startEst, 1);
         last_origin      = numel(dateNumeric);
         dateNumeric_full = dateNumeric;
+
+        % Primary mask: skip prediction ORIGINS inside the core Covid window.
         covid_mask_full  = dateNumeric(:) >= cfg.covidStart & ...
                            dateNumeric(:) <= cfg.covidEnd;
+
+        % Extended mask: also exclude training rows whose lagged predictor
+        % values reference Covid-affected dates.  For 1-quarter lags and
+        % YoY predictors (4-quarter look-back), a buffer of cfg.covidLagBuffer
+        % quarters beyond covidEnd covers the full base-effects window.
+        covidEnd_ext = datenum(datetime(cfg.covidEnd, 'ConvertFrom', 'datenum') ...
+                               + calquarters(cfg.covidLagBuffer));
+        covid_excl_mask = dateNumeric(:) >= cfg.covidStart & ...
+                          dateNumeric(:) <= covidEnd_ext;
+
         assert(~isempty(idx_est), 'cfg.startEst not found in data.');
 
         % actualvar(t,h) = dep-var value at h-step-ahead target of origin t
@@ -228,32 +281,44 @@ for spec = 1:nSpec
 
         t = endtime - idx_est + 1;
 
-        % Skip origins whose conditioning date is in the Covid window
+        % Skip PREDICTION at origins in the core Covid window
+        % (covid_mask_full = Q1-2020 to Q1-2022)
         if covid_mask_full(endtime)
             continue
         end
 
-        % Non-Covid row indices within the estimation window
-        keep_x = find(~covid_mask_full(1:endtime));   % subset of 1:endtime
+        % Skip PREDICTION at origins in the lag-buffer window too
+        % (covid_excl_mask = Q1-2020 to Q1-2022+buffer)
+        % This prevents extreme Covid-adjacent predictor values from
+        % entering either the training data or the prediction step.
+        if covid_excl_mask(endtime)
+            continue
+        end
+
+        % Training rows: exclude all dates in the extended Covid window
+        % (handles both direct Covid observations and lag-contaminated rows)
+        keep_x = find(~covid_excl_mask(1:endtime));
         X_filt = explvar(keep_x, :);
         T_filt = size(X_filt, 1);
 
-        % Build LP targets on filtered rows
-        %   Y_LP(t_f, 1, h) = depvar(keep_x(t_f) + h)
-        %   Valid only if target index ≤ endtime and not itself in Covid window
+        % Build LP targets on filtered rows.
+        % Y_LP targets are also filtered with covid_excl_mask so that
+        % lag-contaminated dependent-variable values (e.g. l1g4rgdp at
+        % t references g4rgdp at t-1 which may be Covid-affected) are
+        % excluded together with the extended window.
         Y_LP = NaN(T_filt, 1, cfg.horizons);
         if cfg.h_step_gdp == 0   % year-on-year growth
             for h = 1:cfg.horizons
                 tgt = keep_x + h;
                 ok  = tgt <= endtime;
-                ok(ok) = ok(ok) & ~covid_mask_full(tgt(ok));
+                ok(ok) = ok(ok) & ~covid_excl_mask(tgt(ok));
                 Y_LP(ok, 1, h) = depvar(tgt(ok));
             end
         else                     % h-step annualised growth
             for h = 1:cfg.horizons
                 tgt = keep_x + h;
                 ok  = tgt <= endtime;
-                ok(ok) = ok(ok) & ~covid_mask_full(tgt(ok));
+                ok(ok) = ok(ok) & ~covid_excl_mask(tgt(ok));
                 Y_LP(ok, 1, h) = 100 * ...
                     (log(depvar(tgt(ok))) - log(depvar(keep_x(ok)))) * (4/h);
             end
@@ -270,7 +335,7 @@ for spec = 1:nSpec
         coeffqr(1:nCoeff, :, :, t, spec) = bQR;
         if doBootstrap, bootstrapqr(1:nCoeff,:,:,:,spec) = bQRbst; end
 
-        % Predicted quantiles at origin endtime (not in Covid — checked above)
+        % Predicted quantiles at origin endtime
         x_now    = [1, explvar(endtime, :)];   % 1 × V
         x_padded = zeros(1, V);
         x_padded(1:nCoeff) = x_now(1:nCoeff);
@@ -317,7 +382,7 @@ end
 [~, idx_min_hor] = min(wis_by_hor(:, cfg.horizons_wis), [], 1);
 
 % Save WIS tables to Excel
-xlsWIS = fullfile(wisDir, sprintf('wis_%s_gdp.xlsx', cfg.modellist{cfg.model_selection}));
+xlsWIS = fullfile(wisDir, sprintf('wis_%s_gdp_%s.xlsx', cfg.modellist{cfg.model_selection}, dep_sfx));
 writetable(table(spec_names, avg_wis, 'VariableNames',{'Specification','AvgWIS'}), ...
     xlsWIS, 'Sheet','avg_wis', 'WriteMode','overwrite');
 writetable(table(cfg.horizons_wis(:), spec_names(idx_min_hor(:)), ...
@@ -358,14 +423,14 @@ lastOriDT       = datetime(dateNumeric_full(last_origin), 'ConvertFrom','datenum
 quarters_origin = StartEstDT : calquarters(1) : lastOriDT;  % 1 × nOrigins
 
 Xorig   = explvar(idx_est:last_origin, :);
-Xfull   = [ones(nOrigins,1), Xorig];          % nOrigins × V  (no Covid column)
+Xfull   = [ones(nOrigins,1), Xorig];          % nOrigins × V
 vLabels = [{'Constant'}, ...
     cellfun(@(s) strrep(s,'_',' '), combo_specifications(spec_to_use,2:end), 'uni',0)];
 
-save(fullfile(outDir,'explanatoryvar_gdp_OOS.mat'), 'explvar');
+save(fullfile(outDir, sprintf('explanatoryvar_gdp_%s.mat', dep_sfx)), 'explvar');
 
 %% ════════════════════════════════════════════════════════════════════════
-%%  5.  DISTRIBUTION FITTING  (for spec_to_use; skew-t at last origin only)
+%%  5.  DISTRIBUTION FITTING
 %% ════════════════════════════════════════════════════════════════════════
 
 t_last = nOrigins;
@@ -394,7 +459,10 @@ switch cfg.model_selection
             fcststdev(:,h) = std( semi_param_distr(:,:,h), 0, 2);
             fcstskew(:,h)  = skewness(semi_param_distr(:,:,h), 0, 2);
             for t = 1:nOrigins
-                [f,x] = ecdf(semi_param_distr(t,:,h));
+                draws = semi_param_distr(t,:,h);
+                draws = draws(~isnan(draws));   % strip NaNs (Covid-excluded origins)
+                if isempty(draws), continue; end
+                [f,x] = ecdf(draws);
                 blk = nan(20001,2);  blk(1:numel(x),:) = [x, f];
                 empirical_cdf(:,:,t,h) = blk;
             end
@@ -403,7 +471,11 @@ switch cfg.model_selection
         crps_results = NaN(nOrigins, cfg.horizons);
         for h = 1:cfg.horizons
             for t = 1:nOrigins
-                crps_results(t,h) = crps(semi_param_distr(t,:,h), actualvar(t,h), 2);
+                draws = semi_param_distr(t,:,h);
+                draws = draws(~isnan(draws));          % strip NaNs (Covid-excluded origins)
+                act_th = actualvar(t,h);
+                if isempty(draws) || isnan(act_th), continue; end
+                crps_results(t,h) = crps(draws, act_th, 2);
             end
         end
         fprintf('Avg CRPS (spec_to_use): %.4f\n', mean(crps_results(:),'omitnan'));
@@ -430,31 +502,44 @@ end
 %%  6.  SAVE CORE OUTPUTS
 %% ════════════════════════════════════════════════════════════════════════
 
-save(fullfile(outDir,'actual_gdp_yoy_OOS.mat'), ...
+save(fullfile(outDir, sprintf('actual_gdp_yoy_%s.mat',          dep_sfx)), ...
     'actual_var','dateNumeric_full','idx_est','last_origin','startT','endT');
-save(fullfile(outDir,'qreg_results_gdp_OOS.mat'),        'coeffqr');
-save(fullfile(outDir,'predicted_quantiles_gdp_OOS.mat'), 'pred_q');
-save(fullfile(outDir,'bootstrap_results_gdp_OOS.mat'),   'bootstrapqr');
+save(fullfile(outDir, sprintf('qreg_results_gdp_%s.mat',        dep_sfx)), 'coeffqr');
+save(fullfile(outDir, sprintf('predicted_quantiles_gdp_%s.mat', dep_sfx)), 'pred_q');
+save(fullfile(outDir, sprintf('bootstrap_results_gdp_%s.mat',   dep_sfx)), 'bootstrapqr');
 
 switch cfg.model_selection
     case 2
-        save(fullfile(sktDir,'sktparam_gdp_OOS.mat'), 'param_skt');
+        save(fullfile(sktDir, sprintf('sktparam_gdp_%s.mat', dep_sfx)), 'param_skt');
     case 3
-        save(fullfile(outDir,'semi_param','moments_gdp.mat'), ...
+        save(fullfile(outDir,'semi_param', sprintf('moments_gdp_%s.mat', dep_sfx)), ...
             'fcstmean','fcststdev','fcstskew');
-        save(fullfile(outDir,'crps','crps_results_gdp.mat'), 'crps_results');
+        save(fullfile(outDir,'crps', sprintf('crps_results_gdp_%s.mat', dep_sfx)), 'crps_results');
     case 4
-        save(fullfile(outDir,'two_piece_normal','tpn_params_gdp.mat'), 'param_tpn');
+        save(fullfile(outDir,'two_piece_normal', sprintf('tpn_params_gdp_%s.mat', dep_sfx)), 'param_tpn');
 end
 
 % Export moments to Excel
-xlsFile  = fullfile(outDir, sprintf('%s_best_spec_gdp.xlsx', ...
-    cfg.modellist{cfg.model_selection}));
+% fcstmean/fcststdev/fcstskew have different shapes depending on model:
+%   case 2 (skew-t)   : H×1  (last origin only — one value per horizon)
+%   case 3,4 (others) : nOrigins×H (take last-origin row)
+% Normalise to 1×H before building the table.
+xlsFile  = fullfile(outDir, sprintf('%s_best_spec_gdp_%s.xlsx', ...
+    cfg.modellist{cfg.model_selection}, dep_sfx));
 colNames = cellstr(strcat('h_', string(0:cfg.horizons-1)));
+
+if isvector(fcstmean) && numel(fcstmean) == cfg.horizons
+    % case 2: H×1 → row vector
+    mom_xls = {fcstmean(:)', fcststdev(:)', fcstskew(:)'};
+else
+    % cases 3,4: nOrigins×H → last-origin row
+    mom_xls = {fcstmean(t_last,:), fcststdev(t_last,:), fcstskew(t_last,:)};
+end
+
 momentVars = {'fcstmean','fcststdev','fcstskew'};
 for i = 1:3
     tbl = [table(quarters_origin(t_last), 'VariableNames',{'Dates'}), ...
-           array2table(eval(momentVars{i}), 'VariableNames', colNames)];
+           array2table(mom_xls{i}, 'VariableNames', colNames)];
     writetable(tbl, xlsFile, 'Sheet', momentVars{i});
 end
 
@@ -463,64 +548,64 @@ actualDT = datetime(dateNumeric_full, 'ConvertFrom','datenum');
 
 %% ════════════════════════════════════════════════════════════════════════
 %%  7.  ROLLING FAN CHARTS  (one per horizon; x-axis = TARGET date)
-%%
-%%  x-axis  = target date  (forecast origin + h quarters)
-%%  y-axis  = predicted distribution of GDP growth at that target date
-%%  Actual GDP and forecast bands share the same x-axis → directly aligned.
-%%  Fan bands are shown only where the origin was not Covid-excluded.
-%%  Actual GDP runs continuously through all target dates.
-%%  Grey rectangle marks the Covid exclusion window (Q1 2020–Q4 2021).
 %% ════════════════════════════════════════════════════════════════════════
 
 qt_idx = arrayfun(@(q) find(abs(cfg.quantiles-q)<1e-8,1), ...
                   [0.05 0.10 0.25 0.50 0.75 0.90 0.95]);
 
-% Covid window as datetime (for the grey shading)
 covid_start_dt = datetime(cfg.covidStart, 'ConvertFrom','datenum');
 covid_end_dt   = datetime(cfg.covidEnd,   'ConvertFrom','datenum');
 
 for h_plot = cfg.hPlot
 
-    % Target dates: where each origin's h-step forecast lands
-    tgt_dates = quarters_origin + calquarters(h_plot - 1);   % 1 × nOrigins
+    tgt_dates = quarters_origin + calquarters(h_plot - 1);
 
-    Q = squeeze(pred_q(:, qt_idx, h_plot));   % nOrigins × 7
+    Q = squeeze(pred_q(:, qt_idx, h_plot));
 
-    % Fan bands: non-Covid origins only (NaN rows would break fill)
     valid  = ~all(isnan(Q), 2);
-    Q_v    = Q(valid, :);                     % T_valid × 7
-    tgt_v  = tgt_dates(valid);               % target dates for valid origins
+    Q_v    = Q(valid, :);
+    tgt_v  = tgt_dates(valid);
 
     fig = figure('Units','normalized','Position',[0.2 0.15 0.6 0.7],'Color','w');
     ax  = gca; hold(ax,'on');
 
-    % --- Fan bands and median at target dates (non-Covid origins only) ---
     plotFanBands(ax, tgt_v, Q_v);
     plot(ax, tgt_v, Q_v(:,4), '--', 'Color',[0 0 0.7], 'LineWidth',1.2, ...
          'DisplayName','50^{th}');
 
-    % --- Actual GDP: OOS period only (from first valid target date onward) -
     oos_mask = actualDT >= tgt_v(1);
-    plot(ax, actualDT(oos_mask)+calquarters(h_plot - 1), actual_var(oos_mask), 'k', 'LineWidth',1.25, 'DisplayName','Outturn');
+    plot(ax, actualDT(oos_mask)+calquarters(h_plot - 1), actual_var(oos_mask), ...
+         'k', 'LineWidth',1.25, 'DisplayName','Outturn');
 
-    % --- Style axes (sets xlim, grid, year ticks) ------------------------
-    styleAxis(ax, tgt_dates, 2);
+    % Set xlim explicitly to the valid data range before computing ticks,
+    % so tick labels are always in chronological order.
+    xl_lo = tgt_v(1);
+    xl_hi = max(tgt_v(end), actualDT(end) + calquarters(h_plot - 1));
+    xlim(ax, [xl_lo, xl_hi]);
 
-    % --- Grey Covid rectangle (pushed to background) ---------------------
-    yl = [-10, 8];%ylim(ax);
+    % Generate ticks inside the visible range only (avoids out-of-order labels)
+    tick_start = datetime(year(xl_lo), 1, 1);
+    ticks = tick_start : calyears(2) : xl_hi;
+    ticks = ticks(ticks >= xl_lo & ticks <= xl_hi);
+    ax.XTick = ticks;
+    ax.XAxis.TickLabelFormat = 'yyyy';
+    yline(ax, 0, 'k-', 'LineWidth', 0.75, 'HandleVisibility', 'off');
+    grid(ax, 'on');
+
+    yl = [-10, 8];
     covid_rect = fill(ax, ...
-        [covid_start_dt+calquarters(h_plot - 1), covid_end_dt+calquarters(h_plot - 1), covid_end_dt+calquarters(h_plot - 1), covid_start_dt+calquarters(h_plot - 1)], ...
+        [covid_start_dt+calquarters(h_plot-1), covid_end_dt+calquarters(h_plot-1), ...
+         covid_end_dt+calquarters(h_plot-1),   covid_start_dt+calquarters(h_plot-1)], ...
         [yl(1), yl(1), yl(2), yl(2)], ...
         [0.75 0.75 0.75], 'EdgeColor','none', 'FaceAlpha',0.4, ...
         'DisplayName','Covid period');
     uistack(covid_rect, 'bottom');
-    ylim(ax, yl);   % restore ylim in case fill expanded it
+    ylim(ax, yl);
 
     legend(ax,'show','Location','northoutside','Orientation','horizontal');
     legend boxoff;
     set(ax,'FontSize',12);
-    %title(ax, sprintf('GDP  h = %d quarters ahead', h_plot-1));
-    saveFig(fig, fanDir, sprintf('gdp_fanchart_OOS_h%d.png', h_plot));
+    saveFig(fig, fanDir, sprintf('gdp_fanchart_%s_h%d.png', dep_sfx, h_plot));
 end
 
 %% ════════════════════════════════════════════════════════════════════════
@@ -531,7 +616,7 @@ lastOrigDT = quarters_origin(t_last);
 for n_fwd = [4, 12]
 
     fcst_fwd = [lastOrigDT lastOrigDT + calquarters(1:n_fwd)];
-    Q_fwd    = [repmat(actual_var(end), size(qt_idx)); squeeze(pred_q(t_last, qt_idx, 2:n_fwd+1))'];  % n_fwd × 7
+    Q_fwd    = [repmat(actual_var(end), size(qt_idx)); squeeze(pred_q(t_last, qt_idx, 2:n_fwd+1))'];
 
     fig = figure('Units','normalized','Position',[0.18 0.12 0.64 0.72],'Color','w');
     ax  = gca; hold(ax,'on');
@@ -544,8 +629,8 @@ for n_fwd = [4, 12]
     styleAxis(ax, fcst_fwd, 2);
     legend(ax,'show','Location','northoutside','Orientation','horizontal'); legend boxoff;
     set(ax,'FontSize',13);
-    title(ax, sprintf('GDP (YoY) — last-origin fan  |  1–%d quarters ahead', n_fwd));
-    saveFig(fig, fanDir, sprintf('gdp_fanchart_OOS_lastOrigin_%dQ.png', n_fwd));
+    title(ax, sprintf('GDP (YoY) — last-origin fan  |  1–%d quarters ahead  [%s]', n_fwd, dep_sfx));
+    saveFig(fig, fanDir, sprintf('gdp_fanchart_%s_lastOrigin_%dQ.png', dep_sfx, n_fwd));
 end
 
 %% ════════════════════════════════════════════════════════════════════════
@@ -574,8 +659,10 @@ for qi = 1:numel(cfg.qDecomp)
         C      = squeeze(contrib(:, q_idx_d(qi), ih, :));
         qline  = squeeze(pred_check(:, q_idx_d(qi), ih));
 
-        fig = figure('Units','normalized','Position',[0.2 0.15 0.6 0.7],'Color','w');
-        ax  = gca; hold(ax,'on');
+        fig = figure('Units','centimeters','Position',[2 2 24 14],'Color','w');
+        % Reserve bottom margin for legend, shrink axes to top 80%
+        ax  = axes('Parent',fig,'Position',[0.08 0.22 0.90 0.68]);
+        hold(ax,'on');
         b   = bar(ax, quarters_origin, C, 'stacked','BarWidth',0.7);
         for j = 1:V, b(j).FaceColor = cmap(j,:); end
         hl  = plot(ax, quarters_origin, qline, 'k-','LineWidth',1.3, ...
@@ -584,23 +671,23 @@ for qi = 1:numel(cfg.qDecomp)
         grid(ax,'on');
         ax.XTick = quarters_origin(1):calyears(2):quarters_origin(end);
         ax.XAxis.TickLabelFormat = 'yyyy';
-        set(ax,'FontSize',13);
-        legend(ax, [b(:)', hl], ...
-               [vLabels, {sprintf('q=%.0f^{th}', cfg.qDecomp(qi)*100)}], ...
-               'Location','southoutside','Orientation','horizontal','Box','off');
-        title(ax, sprintf('Historical decomposition — GDP  |  h=%d, q=%.0f^{th}', ...
-              h_plot-1, cfg.qDecomp(qi)*100));
+        set(ax,'FontSize',10);
+        title(ax, sprintf('Historical decomposition — GDP [%s]  |  h=%d, q=%.0f^{th}', ...
+              dep_sfx, h_plot-1, cfg.qDecomp(qi)*100), 'FontSize',10);
         hold(ax,'off');
-        saveFig(fig, figDir, sprintf('gdp_decomp_OOS_h%d_q%d.png', ...
-                h_plot, round(cfg.qDecomp(qi)*100)));
+        % Legend below axes with small font so all labels fit
+        lgd = legend(ax, [b(:)', hl], ...
+               [vLabels, {sprintf('q=%.0f^{th}', cfg.qDecomp(qi)*100)}], ...
+               'Orientation','horizontal','Box','off','FontSize',7.5, ...
+               'NumColumns', V+1);
+        lgd.Position = [0.05, 0.01, 0.90, 0.10];
+        saveFig(fig, figDir, sprintf('gdp_decomp_%s_h%d_q%d.png', ...
+                dep_sfx, h_plot, round(cfg.qDecomp(qi)*100)));
     end
 end
 
 %% ════════════════════════════════════════════════════════════════════════
-%%  10.  LÓPEZ-SALIDO CHART  (last vintage, bootstrap std-dev bands)
-%%
-%%   Layout:  5 predictors  ×  3 horizons  (1Q, 1Y, 2Y)
-%%   Y-axis limits are set for the default specification; adjust if needed.
+%%  10.  LÓPEZ-SALIDO CHART
 %% ════════════════════════════════════════════════════════════════════════
 
 B_last  = squeeze(coeffqr(:,:,:,end));         % V × Qn × H
@@ -611,15 +698,10 @@ qt_ls   = arrayfun(@(q) find(abs(cfg.quantiles-q)<1e-8,1), q_plot);
 qlabels = arrayfun(@(q) sprintf('%.0f^{th}',q*100), q_plot,'UniformOutput',false);
 colors  = lines(numel(qt_ls));
 
-% Predictor display order, labels and fixed y-limits
-% Row order: economic activity, leverage, FCI, macro/nominal, labour
-var_order  = 1 : nPred;          % 5 predictors (no Covid dummy)
+var_order  = 1 : nPred;          % 4 predictors (no labour)
 var_labels = { sprintf('ECONOMIC\nACTIVITY'),   sprintf('LEVERAGE\nGROWTH'),   ...
-               sprintf('FINANCIAL\nCONDITIONS'), sprintf('NOMINAL\nINDICATOR'), ...
-               sprintf('LABOUR\nMARKET')};
-var_ylims  = { [-100, 100]; [-0.6, 0.2]; [-25, 20]; [-0.1, 0.1]; []};
-%              econ act       leverage     FCI          macro/nom  labour
-%              (set to [] for auto-scale)
+               sprintf('FINANCIAL\nCONDITIONS'), sprintf('NOMINAL\nINDICATOR')};
+var_ylims  = { [-100, 100]; [-0.6, 0.2]; [-25, 20]; [-0.1, 0.1]};
 
 horLabels = {};
 for iH = 1:numel(cfg.hor_ls)
@@ -634,7 +716,7 @@ tiledlayout(numel(var_order), numel(cfg.hor_ls), ...
     'TileSpacing','Compact','Padding','Compact');
 
 for k = 1:numel(var_order)
-    v_idx = 1 + var_order(k);    % +1 to skip constant row
+    v_idx = 1 + var_order(k);
     for iH = 1:numel(cfg.hor_ls)
         hor = cfg.hor_ls(iH);
         ax  = nexttile; hold(ax,'on'); yline(ax,0,'k');
@@ -659,7 +741,7 @@ for k = 1:numel(var_order)
     end
 end
 set(fig,'PaperUnits','centimeters','PaperPosition',[0 0 22 28]);
-saveFig(fig, figDir, 'econ_interpr_gdp_OOS_1q_1y_2y.png', 300);
+saveFig(fig, figDir, sprintf('econ_interpr_gdp_%s_1q_1y_2y.png', dep_sfx), 300);
 
 %% ════════════════════════════════════════════════════════════════════════
 %%  11.  EXPORT LAST-ORIGIN SKEW-T PARAMETERS  (model == 2 only)
@@ -671,14 +753,20 @@ if cfg.model_selection == 2
     sh_qtr = param_skt(3, h_fwd_idx)';   df_qtr = param_skt(4, h_fwd_idx)';
     fcst_dates_qtr = (lastOrigDT + calquarters(1:numel(h_fwd_idx)))';
 
-    save(fullfile(sktDir,'last_origin_skewt_params_12Q.mat'), ...
+    save(fullfile(sktDir, sprintf('last_origin_skewt_params_12Q_%s.mat', dep_sfx)), ...
         'lc_qtr','sc_qtr','sh_qtr','df_qtr', ...
         'fcstmean','fcststdev','fcstskew','fcst_dates_qtr','lastOrigDT');
-    save(fullfile(sktDir,'quarterly_skewt_params_forSharing_gdp.mat'), ...
+    save(fullfile(sktDir, sprintf('quarterly_skewt_params_forSharing_gdp_%s.mat', dep_sfx)), ...
         'lc_qtr','sc_qtr','sh_qtr','df_qtr','fcst_dates_qtr','lastOrigDT','-v7.3');
 end
 
-fprintf('\n── DONE: GDP OOS pipeline complete. ──\n');
+fprintf('\n── DONE: GDP OOS pipeline complete [%s]. ──\n', dep_sfx);
+
+end  % ── end dv_loop ──────────────────────────────────────────────────────
+
+fprintf('\n════════════════════════════════════════════════════════════\n');
+fprintf('  All dep-var variants complete.\n');
+fprintf('════════════════════════════════════════════════════════════\n');
 
 %% ════════════════════════════════════════════════════════════════════════
 %%  LOCAL FUNCTIONS
@@ -693,20 +781,15 @@ end
 
 function plotFanBands(ax, dates, Q)
 %PLOTFANBANDS  Draw shaded quantile fan bands.
-%   dates : 1×T or T×1 datetime vector
-%   Q     : T×7 matrix  [Q05 Q10 Q25 Q50 Q75 Q90 Q95]
-%   Bands are plotted widest first so narrower bands overlay wider ones.
-    d = dates(:)';                   % ensure row
+    d = dates(:)';
     bands = { [1,7], [0.85 0.9 1],  '5^{th}–95^{th}'; ...
               [2,6], [0.65 0.8 1],  '10^{th}–90^{th}'; ...
               [3,5], [0.4  0.6 1],  '25^{th}–75^{th}' };
     for b = 1:3
-        lo = Q(:, bands{b,1}(1))';  % 1×T
-        hi = Q(:, bands{b,1}(2))';  % 1×T
-        % Build closed polygon: go forward along lo, backward along hi
-        xpoly = [d,        fliplr(d)       ];
-        ypoly = [lo,       fliplr(hi)      ];
-        % Skip if all NaN
+        lo = Q(:, bands{b,1}(1))';
+        hi = Q(:, bands{b,1}(2))';
+        xpoly = [d,        fliplr(d)];
+        ypoly = [lo,       fliplr(hi)];
         if all(isnan(ypoly)), continue; end
         fill(ax, xpoly, ypoly, bands{b,2}, ...
              'EdgeColor','none','FaceAlpha',1,'DisplayName',bands{b,3});
@@ -723,8 +806,15 @@ function styleAxis(ax, dates, step_yrs)
 end
 
 function saveFig(fig, folder, filename, dpi)
-%SAVEFIG  Save figure as PNG and close it.  Default dpi = 200.
+%SAVEFIG  Save figure as PNG (figures stay open for inspection).
+%   Uses exportgraphics (R2020a+) with print as fallback.
     if nargin < 4, dpi = 200; end
-    print(fig, fullfile(folder, filename), '-dpng', sprintf('-r%d',dpi));
-    close(fig);
+    fpath = fullfile(folder, filename);
+    try
+        exportgraphics(fig, fpath, 'Resolution', dpi);
+    catch
+        print(fig, fpath, '-dpng', sprintf('-r%d', dpi));
+    end
+    % NOTE: figure is intentionally NOT closed so you can inspect plots
+    %       while the script runs. Close manually or call close all when done.
 end

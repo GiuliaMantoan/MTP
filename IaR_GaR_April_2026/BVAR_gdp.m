@@ -157,14 +157,14 @@ actualvar = interm(1:cfg.horizons, :)';   % nOrigins × horizons
 
 sigma_ar = nan(N, 1);
 for n = 1:N
-    y_n = Y_all(:, n);
+    y_n = Y_all(1 : idx_est-1, n);   % pre-estimation data only — no look-ahead
     y_n = y_n(~isnan(y_n));
     if numel(y_n) < 4
         sigma_ar(n) = std(y_n, 'omitnan');
         continue
     end
-    Z_ar      = [ones(numel(y_n)-1, 1), y_n(1:end-1)];
-    b_ar      = Z_ar \ y_n(2:end);
+    Z_ar        = [ones(numel(y_n)-1, 1), y_n(1:end-1)];
+    b_ar        = Z_ar \ y_n(2:end);
     sigma_ar(n) = std(y_n(2:end) - Z_ar * b_ar);
 end
 
@@ -176,7 +176,9 @@ Qn = numel(cfg.quantiles);
 p  = cfg.bvar.p;
 K  = 1 + N * p;            % regressors: const + N*p lags  (fixed, no Covid col)
 
-pred_q = NaN(nOrigins, Qn, cfg.horizons);
+pred_q     = NaN(nOrigins, Qn, cfg.horizons);
+pred_mu    = NaN(nOrigins, cfg.horizons);   % posterior predictive mean
+pred_sigma = NaN(nOrigins, cfg.horizons);   % posterior predictive std dev
 
 %% ════════════════════════════════════════════════════════════════════════
 %%  4.  RECURSIVE OOS LOOP
@@ -312,12 +314,14 @@ for o = 1:nOrigins
         fc_dep(d, :) = Y_path(p+1 : p+H, 1)';
     end
 
-    %% ── Store predictive quantiles ───────────────────────────────────────
+    %% ── Store predictive moments and quantiles ───────────────────────────
     for h = 1:H
         fc_h = fc_dep(:, h);
         fc_h = fc_h(~isnan(fc_h));
         if numel(fc_h) < 10, continue; end
-        pred_q(o, :, h) = quantile(fc_h, cfg.quantiles);
+        pred_q(o, :, h)  = quantile(fc_h, cfg.quantiles);
+        pred_mu(o, h)    = mean(fc_h);
+        pred_sigma(o, h) = std(fc_h);
     end
 
     if mod(o, 10) == 0
@@ -344,7 +348,8 @@ fprintf('BVAR average WIS: %.4f\n', bvar_wis);
 dateNumeric_est = dateNumeric(idx_est : idx_est + nOrigins - 1);
 
 save(fullfile(outDir, 'BVAR_gdp_pred_q.mat'), ...
-    'pred_q', 'actualvar', 'dateNumeric_est', 'cfg', 'bvar_wis', 'sigma_ar');
+    'pred_q', 'pred_mu', 'pred_sigma', ...
+    'actualvar', 'dateNumeric_est', 'cfg', 'bvar_wis', 'sigma_ar');
 
 fprintf('Saved: %s\n', fullfile(outDir, 'BVAR_gdp_pred_q.mat'));
 

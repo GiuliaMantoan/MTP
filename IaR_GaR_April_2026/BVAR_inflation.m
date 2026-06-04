@@ -79,7 +79,7 @@ cfg.varnames = {cfg.var.dep, cfg.var.persist, cfg.var.expect, ...
 
 % Minnesota prior hyperparameters
 cfg.bvar.p       = 1;     % VAR lag order  (1 recommended for monthly data)
-cfg.bvar.lambda1 = 0.2;   % overall tightness
+cfg.bvar.lambda1 = 0.05;   % overall tightness
 cfg.bvar.lambda3 = 1;     % lag decay exponent (1 = harmonic decay)
 cfg.bvar.lambda4 = 1e3;   % constant prior scale (large = diffuse)
 cfg.bvar.delta   = ones(numel(cfg.varnames), 1);  % own-lag prior mean
@@ -145,19 +145,19 @@ actualvar = interm(1:cfg.horizons, :)';   % nOrigins × horizons
 %% ════════════════════════════════════════════════════════════════════════
 %%  2.  PRIOR SCALE FACTORS  (sigma from AR(1) residual SDs)
 %% ════════════════════════════════════════════════════════════════════════
-%  Estimated once on the full sample.  These scale the Minnesota prior
-%  so that shrinkage is proportional to each variable's own variability.
+%  Estimated on the PRE-ESTIMATION window only (data before cfg.startEst)
+%  so that sigma_ar introduces no look-ahead bias into the OOS evaluation.
 
 sigma_ar = nan(N, 1);
 for n = 1:N
-    y_n = Y_all(:, n);
+    y_n = Y_all(1 : idx_est-1, n);   % pre-estimation data only
     y_n = y_n(~isnan(y_n));
     if numel(y_n) < 4
         sigma_ar(n) = std(y_n, 'omitnan');
         continue
     end
-    Z_ar      = [ones(numel(y_n)-1, 1), y_n(1:end-1)];
-    b_ar      = Z_ar \ y_n(2:end);
+    Z_ar        = [ones(numel(y_n)-1, 1), y_n(1:end-1)];
+    b_ar        = Z_ar \ y_n(2:end);
     sigma_ar(n) = std(y_n(2:end) - Z_ar * b_ar);
 end
 
@@ -169,7 +169,9 @@ Qn     = numel(cfg.quantiles);
 p      = cfg.bvar.p;
 K      = 1 + N * p;           % regressors per equation: const + N*p lags
 
-pred_q = NaN(nOrigins, Qn, cfg.horizons);
+pred_q     = NaN(nOrigins, Qn, cfg.horizons);
+pred_mu    = NaN(nOrigins, cfg.horizons);   % posterior predictive mean
+pred_sigma = NaN(nOrigins, cfg.horizons);   % posterior predictive std dev
 
 %% ════════════════════════════════════════════════════════════════════════
 %%  4.  RECURSIVE OOS LOOP
@@ -321,12 +323,14 @@ for o = 1:nOrigins
         fc_dep(d, :) = Y_path(p+1 : p+H, 1)';
     end
 
-    %% ── Store predictive quantiles ───────────────────────────────────────
+    %% ── Store predictive moments and quantiles ───────────────────────────
     for h = 1:H
         fc_h = fc_dep(:, h);
         fc_h = fc_h(~isnan(fc_h));
         if numel(fc_h) < 10, continue; end
-        pred_q(o, :, h) = quantile(fc_h, cfg.quantiles);
+        pred_q(o, :, h)  = quantile(fc_h, cfg.quantiles);
+        pred_mu(o, h)    = mean(fc_h);
+        pred_sigma(o, h) = std(fc_h);
     end
 
     if mod(o, 20) == 0
@@ -353,7 +357,8 @@ fprintf('BVAR average WIS: %.4f\n', bvar_wis);
 dateNumeric_est = dateNumeric(idx_est : idx_est + nOrigins - 1);
 
 save(fullfile(outDir, 'BVAR_inflation_pred_q.mat'), ...
-    'pred_q', 'actualvar', 'dateNumeric_est', 'cfg', 'bvar_wis', 'sigma_ar');
+    'pred_q', 'pred_mu', 'pred_sigma', ...
+    'actualvar', 'dateNumeric_est', 'cfg', 'bvar_wis', 'sigma_ar');
 
 fprintf('Saved: %s\n', fullfile(outDir, 'BVAR_inflation_pred_q.mat'));
 
