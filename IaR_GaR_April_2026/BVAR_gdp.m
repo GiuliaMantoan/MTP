@@ -1,7 +1,7 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%  GDP AT-RISK  —  Recursive OOS BVAR  (Quarterly, Minnesota Prior)
 %%
-%%  Authors : Aikman, Bidder, Lloyd, Mantoan, Maso, Mori, Tong
+%%  Authors : Aikman, Bidder, Lloyd, Mantoan, Maso S., Mori, Tong
 %%  Updated : April 2026
 %%
 %%  PIPELINE
