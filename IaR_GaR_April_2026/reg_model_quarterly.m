@@ -18,32 +18,32 @@ rng('default');
 % NOTE: for exact replication of results: to get crps and semiparam run the code with boots = 10 (across the 12 specifications)
 % To get the bootstrap run the code with the best spec only boots = 1000
 
-cd 'C:\Users\simon\Dropbox\BoE-KCL Macro Forecasting\' % change here the cd 
+cd('C:\Users\ucei648\OneDrive - University College London\Desktop\MTP\IaR_GaR_April_2026')   % change the working directory here
 addpath('Data\') % data input
-addpath('Codes\intermediate_codes\')  % intermediate code (data loading..)
-addpath('Codes\functions\')   % functions
-addpath('Codes\functions\azzalini')  % skew t functions 
-addpath('Codes\functions\CRPS')  %  Continuos rank prob score functions 
-addpath('Codes\functions\Simon_qreg')  %  Continuos rank prob score functions 
-addpath('Codes\functions\two_piece_normal')  %  TPN functions
+addpath('intermediate_codes\')  % intermediate code (data loading..)
+addpath('functions\')   % functions
+addpath('functions\azzalini')  % skew t functions 
+addpath('functions\CRPS')  %  Continuos rank prob score functions 
+addpath('functions\Simon_qreg')  %  Continuos rank prob score functions 
+addpath('functions\two_piece_normal')  %  TPN functions
 outputFolder = fullfile(pwd, 'Outputs/'); % charts and tables
 dropboxFolder = 'D:\Dropbox\Apps\Overleaf\BoE-KCL Macro Forecasting\TablesFigures';
 
 % File names
-fullFileName = fullfile('Data', 'GaRDataRaw_quarterly.xlsx'); % raw data 
+fullFileName = fullfile('GaRDataRaw_quarterly_BIS_march.xlsx'); % raw data 
 
 %%%%%%%%%%%%%%%%%%
 %% CONTROL PANEL %
 %%%%%%%%%%%%%%%%%%
 
 startT = datenum(1980,06,30);  
-endT   = datenum(2025,03,31); 
+endT   = datenum(2026,06,30); 
 
 ctrynames = {'UK'}; % country 
 onlyuk      = 1; % Set to 1 for UK only, 0 for panel (multiple countries to be specified in ctrynames) [For now only UK]
 
 dep_var_name = {'g4rgdp'}; % dep var y-o-y gdp growth (g4rgdp) 
-current_act_cat = {'pmi_out_long', 'mgdp_yoy'}; % current GDP (g4rgdp) - PMI output (pmi_out_long) - PMI output fut (pmi_out_fut_long) - monthly gdp (mgdp_yoy) , 'mgdp_yoy
+current_act_cat = {'mgdp_yoy'}; % current GDP (g4rgdp) - PMI output (pmi_out_long) - PMI output fut (pmi_out_fut_long) - monthly gdp (mgdp_yoy) , 'mgdp_yoy
 leverage_cat = {'global_credit'}; % credit to Private non financial sector (lender: all) % of GDP for UK (delta_3y_credit_to_gdp_all) and global (global_credit)
 fci_cat = {'ciss_uk'}; % market volatility (market_vol_uk) and Composite indicator of systemic stress (ciss_uk) and yield curve slope (yield_curve_slope)
 macro_cond_cat = {'g4_import_deflator_fuel'}; % inflation (g4infl), inflation expectations (inflation_expectations), import fuel deflator growth (g4_import_deflator_fuel)
@@ -54,14 +54,14 @@ horizons = 13; % forecast horizons
 momentlist = {'fcstmean', 'fcststdev', 'fcstskew'}; % moments 
 quantilelevels = 0.05:0.05:0.95; % quantiles for qreg 
 StartEst =  datenum(2004,03,31); % first period at which fcst are estimated datenum(2004,01,01)
-covid = 1; % 1 covid is accounted (dummy = 1 for 2020q2 and 2020q3) 0 covid not accounted 
+covid = 0; % 1 covid is accounted (dummy = 1 for 2020q2 and 2020q3) 0 covid not accounted 
 covid_dates = datenum(2020,06,30); % first date at which covid appears (if you want to change the full structure of covid dummies you need to go in GARdataRaw.xlsx (sheet 'covid')
 h_step_gdp = 0; % 0 is y-o-y gdp growth as dep variable - 1 is vulnerable growth (h-step ahead annualized)
 
 % bootstrap option Simon
 bst = 1;
 bstOptions.blocksize = 8; 
-bstOptions.nboot    = 1000; % Usually 5000
+bstOptions.nboot    = 10; % Usually 5000
 bstOptions.ci       = 68;  % just for the code to run - it never get used
 
 horizons_crps = [1 5 13]; % horizons of which you want to know the best spec in terms of crps (current | 1y | 2y)
@@ -193,6 +193,15 @@ for spec = 1:size(combo_specifications,1)
     
         end
     end
+    
+    % Flag the core Covid window (do NOT delete — keep the calendar intact)
+    covid_excl_mask = false(size(depvar,1),1);
+    if covid == 0
+        covid_window = idx_covid : (idx_covid + 12);
+        covid_window = covid_window(covid_window >= 1 & covid_window <= size(depvar,1));
+        covid_excl_mask(covid_window) = true;   % true = inside Covid window
+    end
+
 
     %explvar_all_spec(:,:,spec) = explvar;
     %save(fullfile(outputFolder, 'explanatoryvar_gdp_yoy_4_cat.mat'),'explvar_all_spec', 'exovar'); % save explanatory variables and dummy covid 
@@ -299,6 +308,19 @@ for spec = 1:size(combo_specifications,1)
                 end
 
                 if covid == 0 % NO COVID
+                    
+                    if covid == 0   % NO COVID
+                        for hor = 1:horizons
+                            origins = (1:size(X,1))';      % each row's own time index (the origin t)
+                            tgt     = origins + hor;       % the target date t+hor for this horizon
+                    
+                            bad = covid_excl_mask(origins);                                    % origin in Covid?
+                            in_range = tgt <= size(X,1);
+                            bad(in_range) = bad(in_range) | covid_excl_mask(tgt(in_range));    % target in Covid?
+                    
+                            Y_LP(bad, 1, hor) = NaN;       % remove those pairs for this horizon
+                        end
+                    end
 
                     if endtime ~=size(depvar,1) % if we are not in the last period -> no bootstrap
                         
@@ -843,10 +865,10 @@ elseif use_best_spec == 0
     
 end
 
-load(fullfile(outputFolder, 'qreg_results_gdp_yoy_4_cat.mat'), 'coeffqr_SL');
+% load(fullfile(outputFolder, 'qreg_results_gdp_yoy_4_cat.mat'), 'coeffqr_SL');
 coeffqreg_SL = permute(coeffqr_SL, [2 1 4 3 5]); % quant x var x time x hor x spec
 %coeffqreg_SL = coeffqreg_SL(:,:,:,:,11);
-load(fullfile(outputFolder, 'bootstrap_results_gdp_yoy_4_cat.mat'), 'bootstrapqrg_SL'); % load bootstrap
+% load(fullfile(outputFolder, 'bootstrap_results_gdp_yoy_4_cat.mat'), 'bootstrapqrg_SL'); % load bootstrap
 % load(fullfile(outputFolder, 'analysis_2000_2019', 'bootstrap_results_gdp.mat'), 'bootstrapqrg_SL'); % load bootstrap
 
 quantilesirf = [0.05 0.1 0.25 0.5 0.75 0.90 0.95]; % quantiles in the chart
@@ -894,7 +916,7 @@ for k = 1:numel(var_order) % var
         for dd = 1:numel(idx_qt)
     
             q_idx        = idx_qt(dd); % get the index of the quantile
-            coeffs(dd)   = squeeze( coeffqreg_SL(q_idx,1+ii,end,hor,spec_to_use) ); % qtl x var x hor x spec (last period is used)
+            coeffs(dd)   = squeeze( coeffqreg_SL(q_idx,1+ii,76,hor,spec_to_use) ); % qtl x var x hor x spec (last period is used)
             % coeffs(dd)     = median_qr(1+ii,q_idx,hor);
             sds(dd)       = std_qreg(1+ii,q_idx,hor);
             
