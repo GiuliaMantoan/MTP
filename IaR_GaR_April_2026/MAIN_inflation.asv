@@ -410,7 +410,7 @@ save(fullfile(outDir,'actual_inflation_mom_OOS.mat'), ...
     'actual_var','dateNumeric_full','idx_est','last_origin','startT','endT');
 save(fullfile(outDir,'qreg_results_inflation_OOS.mat'),        'coeffqr');
 save(fullfile(outDir,'predicted_quantiles_inflation_OOS.mat'), 'pred_q');
-% save(fullfile(outDir,'bootstrap_results_inflation_OOS.mat'),   'bootstrapqr');
+save(fullfile(outDir,'bootstrap_results_inflation_OOS.mat'),   'bootstrapqr');
 
 switch cfg.model_selection
     case 2
