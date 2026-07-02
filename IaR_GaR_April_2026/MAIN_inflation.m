@@ -85,7 +85,7 @@ cfg.var.fci     = {'bond_spread'};                % financial conditions
 
 % Distribution model
 %   2 = Skew-t  |  3 = Semi-parametric  |  4 = Two-piece Normal
-cfg.model_selection = 2;
+cfg.model_selection = 3;
 cfg.modellist       = {'ols', 'skewt', 'semi-param', 'two-piece-normal'};
 
 % Spec selection
@@ -410,7 +410,7 @@ save(fullfile(outDir,'actual_inflation_mom_OOS.mat'), ...
     'actual_var','dateNumeric_full','idx_est','last_origin','startT','endT');
 save(fullfile(outDir,'qreg_results_inflation_OOS.mat'),        'coeffqr');
 save(fullfile(outDir,'predicted_quantiles_inflation_OOS.mat'), 'pred_q');
-% save(fullfile(outDir,'bootstrap_results_inflation_OOS.mat'),   'bootstrapqr');
+save(fullfile(outDir,'bootstrap_results_inflation_OOS.mat'),   'bootstrapqr');
 
 switch cfg.model_selection
     case 2
@@ -621,7 +621,7 @@ for k = 1:numel(var_order)
     end
 end
 set(fig,'PaperUnits','centimeters','PaperPosition',[0 0 22 30]);
-% saveFig(fig, figDir, 'econ_interpr_inflation_OOS_1m_1y_2y.png', 300);
+saveFig(fig, figDir, 'econ_interpr_inflation_OOS_1m_1y_2y.png', 300);
 
 %% ════════════════════════════════════════════════════════════════════════
 %%  11.  EXPORT LAST-ORIGIN SKEW-T PARAMETERS  (model == 2 only)
