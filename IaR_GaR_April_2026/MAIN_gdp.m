@@ -49,7 +49,8 @@ fanDir   = fullfile(outDir, 'predictive_densities');
 sktDir   = fullfile(outDir, 'sktparam');
 wisDir   = fullfile(outDir, 'wis');
 
-mkdirs({outDir, figDir, fanDir, sktDir, wisDir});
+% mkdirs({outDir, figDir, fanDir, sktDir, wisDir});
+scriptDir = 'C:\Users\ucei648\OneDrive - University College London\Desktop\MTP\IaR_GaR_April_2026';  % change the working directory here;
 
 addpath(fullfile(scriptDir, 'intermediate_codes'));
 addpath(fullfile(scriptDir, 'functions'));
@@ -68,7 +69,7 @@ cfg.startEst = datenum(2004, 3, 31);    % first forecast origin
 % Variable categories — list alternatives in each cell to search over specs.
 % The ndgrid below generates every combination automatically.
 cfg.var.current_act = {'mgdp_yoy'};               % current economic activity
-cfg.var.leverage    = {'global_credit'};           % leverage / credit-to-GDP growth
+cfg.var.leverage    = {'global_credit_level'};           % leverage / credit-to-GDP growth
 cfg.var.fci         = {'ciss_uk'};                 % financial conditions
 cfg.var.macro_cond  = {'g4_import_deflator_fuel'}; % nominal / external indicator
 
@@ -105,7 +106,7 @@ cfg.horizons  = 13;            % h=1 current; h=2..13 → 1..12 quarters ahead
 cfg.quantiles = 0.05:0.05:0.95;
 
 % Bootstrap  *** SET nboot = 5000 FOR PRODUCTION RUNS ***
-cfg.bst.nboot     = 10;
+cfg.bst.nboot     = 1000;
 cfg.bst.blocksize = 8;
 cfg.bst.ci        = 68;
 
@@ -271,6 +272,74 @@ for spec = 1:nSpec
     depvar  = countryData.UK.(vlag{1});
     explvar = table2array(countryData.UK(:, vlag(2:end)));
 
+    %% ── Global credit: counterfactual --> 3y change → filtered-dummy─────
+
+    % identify credit/leverage position in the explanatory variables matrix
+    cred_col = find(strcmp(vlag(2:end), strcat('l1', cfg.var.leverage{1})), 1);
+    assert(~isempty(cred_col), 'global_credit (leverage) column not found in explvar.');
+    cred = explvar(:, cred_col);
+    nLag = 12; % 3y
+    
+    % Regime split on the Covid start date.
+    postCov = dateNumeric(:) >= cfg.covidStart;
+    lastPre = find(~postCov, 1, 'last');
+    assert(~isempty(lastPre), 'No pre-Covid observations found.');
+    
+    % ── STEP 1: freeze pre-Covid, forecast forward (counterfactual) ─────
+    Xar = ones(numel(cred), 1 + nLag);
+    for k = 1:nLag
+        Xar(k+1:end, 1+k) = cred(1:end-k);
+    end
+    fitRows = (1:lastPre)';
+    fitRows = fitRows(fitRows > nLag);
+    bAR = Xar(fitRows, :) \ cred(fitRows);
+    
+    cred_cf = cred;
+    for t = lastPre+1 : numel(cred)
+        lags = cred_cf(t-1:-1:t-nLag);
+        cred_cf(t) = bAR(1) + bAR(2:end)' * lags;
+    end
+    
+    % ── STEP 2: 3-year change — actual & counterfactual ─
+    horizon = 12;                            % 2 years × 4 quarters
+    cred_g3y    = NaN(numel(cred), 1);       % actual
+    cred_cf_g3y = NaN(numel(cred_cf), 1);    % counterfactual
+    cred_g3y(horizon+1:end)    = cred(horizon+1:end)    - cred(1:end-horizon);
+    cred_cf_g3y(horizon+1:end) = cred_cf(horizon+1:end) - cred_cf(1:end-horizon);
+    
+    % ── STEP 3: regress 3y growth on (growth negative AND pre-Covid) dummy ─
+    negPreG = double((cred_cf_g3y < 0) & ~postCov);
+    ook  = ~isnan(cred_cf_g3y);
+    Xreg = [ones(sum(ook),1), negPreG(ook)];
+    bhat = Xreg \ cred_cf_g3y(ook);           % bhat(1)=intercept, bhat(2)=betahat (dummy)
+    
+    % ── STEP 4: filtered growth = 3y growth − betahat*dummy ─────────────
+    cred_cf_g3y_filt = cred_cf_g3y - bhat(2) * negPreG;
+    
+    % ── STEP 5: chart ───────────────────────────────────────────────────
+    %figure;
+    %plot(dateNumeric, cred_g3y,         '-b', ...
+    %     dateNumeric, cred_cf_g3y,      '-r', ...
+    %     dateNumeric, cred_cf_g3y_filt, '-k', 'LineWidth', 1.2);
+    %datetick('x','yyyy');
+    %legend('actual 3y growth', ...
+    %       'counterfactual 3y growth', ...
+    %       'filtered (growth − \beta\cdotdummy)', ...
+    %       'Location','best');
+    %title('Global credit: 3y growth — actual, counterfactual, filtered');
+    %grid on;
+    
+    % ── Seed the first 12 (NaN) values of the filtered 2y growth ─────────
+    % A note: this need to be automated
+    seed = [1.634735264; 1.751523917; 1.501247401; 1.921876285; ...
+            2.888871897; 3.480097204; 4.006020539; 3.321334864; ...
+            1.724143428; 1.467491082; 2.283385429; 2.590708225];
+
+    cred_cf_g3y_filt(1:numel(seed)) = seed;
+    
+    % Put it back into the predictor matrix.
+    explvar(:, cred_col) = cred_cf_g3y_filt;
+
     %% ── Recursive QR loop ───────────────────────────────────────────────
     %
     %  Covid exclusion: quarters in [covidStart, covidEnd] are dropped from
@@ -415,7 +484,7 @@ dataloading_quarterly;
 
 vlag       = strcat('l1', varnames);
 depvar     = countryData.UK.(vlag{1});
-explvar    = table2array(countryData.UK(:, vlag(2:end)));
+% explvar    = table2array(countryData.UK(:, vlag(2:end)));
 actual_var = countryData.UK.(cfg.var.dep{1});
 
 StartEstDT      = datetime(cfg.startEst,                 'ConvertFrom','datenum');
