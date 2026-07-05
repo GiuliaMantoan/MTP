@@ -101,7 +101,7 @@ cfg.horizons  = 37;            % h=1 current; h=2..37 → 1..36 months ahead
 cfg.quantiles = 0.05:0.05:0.95;
 
 % Bootstrap  *** SET nboot = 5000 FOR PRODUCTION RUNS ***
-cfg.bst.nboot     = 10;
+cfg.bst.nboot     = 1000;
 cfg.bst.blocksize = 24;
 cfg.bst.ci        = 68;
 
