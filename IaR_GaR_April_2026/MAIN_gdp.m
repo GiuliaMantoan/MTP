@@ -2,7 +2,7 @@
 %%  GDP AT-RISK  —  Recursive OOS Quantile LP + Model/Spec Selection
 %%  (Quarterly, Multi-Specification, Covid sample exclusion)
 %
-%  Authors : Aikman, Bidder, Lloyd, Mantoan, Maso, Mori, Tong
+%  Authors : Aikman, Bidder, Lloyd, Mantoan, S. Maso, Mori, Tong
 %  Updated : April 2026
 %
 %  PIPELINE
