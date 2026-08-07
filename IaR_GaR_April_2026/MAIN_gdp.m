@@ -68,10 +68,21 @@ cfg.startEst = datenum(2004, 3, 31);    % first forecast origin
 
 % Variable categories — list alternatives in each cell to search over specs.
 % The ndgrid below generates every combination automatically.
-cfg.var.current_act = {'mgdp_yoy'};               % current economic activity
-cfg.var.leverage    = {'global_credit_level'};           % leverage / credit-to-GDP growth
-cfg.var.fci         = {'ciss_uk'};                 % financial conditions
+cfg.var.current_act = {'mgdp_yoy'};               % current economic activity  
+%                  'g4rgdp'                       % Current year-on-year GDP growth)
+%                  'pmi_out_long'                 % PMI for UK Output
+%                  'pmi_out_fut_long'             % PMI for UK future Output 
+
+cfg.var.leverage    = {'global_credit_level'};    % leverage / credit-to-GDP growth
+%                  'delta_3y_credit_to_gdp_all'   % 3-year change in the United Kingdom’s credit-to-GDP ratio
+
+cfg.var.fci         = {'ciss_uk'};                % financial conditions
+%                   'yield_curve_slope'           % 10-year minus 1-year zero-coupon nominal spot rates
+%                   'market_vol_uk'               % Quarterly realized return volatility of the MSCI UK Index
+
 cfg.var.macro_cond  = {'g4_import_deflator_fuel'}; % nominal / external indicator
+%                   'g4infl'                      % year-on-year CPI inflatio
+%                   'inflation_expectations'      % ean annual CPI inflation expectations for next calendar year
 
 % Distribution model
 %   2 = Skew-t  |  3 = Semi-parametric  |  4 = Two-piece Normal
@@ -106,7 +117,7 @@ cfg.horizons  = 13;            % h=1 current; h=2..13 → 1..12 quarters ahead
 cfg.quantiles = 0.05:0.05:0.95;
 
 % Bootstrap  *** SET nboot = 5000 FOR PRODUCTION RUNS ***
-cfg.bst.nboot     = 1000;
+cfg.bst.nboot     = 10;
 cfg.bst.blocksize = 8;
 cfg.bst.ci        = 68;
 
@@ -217,6 +228,10 @@ actualvar        = [];
 %%  3.  SPEC LOOP  —  QR ESTIMATION + WIS
 %% ════════════════════════════════════════════════════════════════════════
 
+% Cache transformed global-credit series. It is computed the first time
+% global_credit_level appears in a spec  and reused thereafter.
+global_credit_filt_cache = [];
+
 tic;
 for spec = 1:nSpec
 
@@ -272,73 +287,165 @@ for spec = 1:nSpec
     depvar  = countryData.UK.(vlag{1});
     explvar = table2array(countryData.UK(:, vlag(2:end)));
 
-    %% ── Global credit: counterfactual --> 3y change → filtered-dummy─────
+    %% ── Global credit transformation ────────────────────────────────────────
+    % Apply this block only if the CURRENT specification contains global_credit_level
 
-    % identify credit/leverage position in the explanatory variables matrix
-    cred_col = find(strcmp(vlag(2:end), strcat('l1', cfg.var.leverage{1})), 1);
-    assert(~isempty(cred_col), 'global_credit (leverage) column not found in explvar.');
-    cred = explvar(:, cred_col);
-    nLag = 12; % 3y
-    
-    % Regime split on the Covid start date.
-    postCov = dateNumeric(:) >= cfg.covidStart;
-    lastPre = find(~postCov, 1, 'last');
-    assert(~isempty(lastPre), 'No pre-Covid observations found.');
-    
-    % ── STEP 1: freeze pre-Covid, forecast forward (counterfactual) ─────
-    Xar = ones(numel(cred), 1 + nLag);
-    for k = 1:nLag
-        Xar(k+1:end, 1+k) = cred(1:end-k);
-    end
-    fitRows = (1:lastPre)';
-    fitRows = fitRows(fitRows > nLag);
-    bAR = Xar(fitRows, :) \ cred(fitRows);
-    
-    cred_cf = cred;
-    for t = lastPre+1 : numel(cred)
-        lags = cred_cf(t-1:-1:t-nLag);
-        cred_cf(t) = bAR(1) + bAR(2:end)' * lags;
-    end
-    
-    % ── STEP 2: 3-year change — actual & counterfactual ─
-    horizon = 12;                            % 2 years × 4 quarters
-    cred_g3y    = NaN(numel(cred), 1);       % actual
-    cred_cf_g3y = NaN(numel(cred_cf), 1);    % counterfactual
-    cred_g3y(horizon+1:end)    = cred(horizon+1:end)    - cred(1:end-horizon);
-    cred_cf_g3y(horizon+1:end) = cred_cf(horizon+1:end) - cred_cf(1:end-horizon);
-    
-    % ── STEP 3: regress 3y growth on (growth negative AND pre-Covid) dummy ─
-    negPreG = double((cred_cf_g3y < 0) & ~postCov);
-    ook  = ~isnan(cred_cf_g3y);
-    Xreg = [ones(sum(ook),1), negPreG(ook)];
-    bhat = Xreg \ cred_cf_g3y(ook);           % bhat(1)=intercept, bhat(2)=betahat (dummy)
-    
-    % ── STEP 4: filtered growth = 3y growth − betahat*dummy ─────────────
-    cred_cf_g3y_filt = cred_cf_g3y - bhat(2) * negPreG;
-    
-    % ── STEP 5: chart ───────────────────────────────────────────────────
-    %figure;
-    %plot(dateNumeric, cred_g3y,         '-b', ...
-    %     dateNumeric, cred_cf_g3y,      '-r', ...
-    %     dateNumeric, cred_cf_g3y_filt, '-k', 'LineWidth', 1.2);
-    %datetick('x','yyyy');
-    %legend('actual 3y growth', ...
-    %       'counterfactual 3y growth', ...
-    %       'filtered (growth − \beta\cdotdummy)', ...
-    %       'Location','best');
-    %title('Global credit: 3y growth — actual, counterfactual, filtered');
-    %grid on;
-    
-    % ── Seed the first 12 (NaN) values of the filtered 2y growth ─────────
-    % A note: this need to be automated
-    seed = [1.634735264; 1.751523917; 1.501247401; 1.921876285; ...
-            2.888871897; 3.480097204; 4.006020539; 3.321334864; ...
-            1.724143428; 1.467491082; 2.283385429; 2.590708225];
+    cred_col = find(strcmp(vlag(2:end), 'l1global_credit_level'), 1);
 
-    cred_cf_g3y_filt(1:numel(seed)) = seed;
+    if ~isempty(cred_col)
+
+        % Compute the transformation only the first time we encounter
+        % global_credit_level.
+        if isempty(global_credit_filt_cache)
     
-    % Put it back into the predictor matrix.
-    explvar(:, cred_col) = cred_cf_g3y_filt;
+            cred = explvar(:, cred_col);
+    
+            fprintf('  Computing global-credit transformation...\n');
+        
+            % Global-credit counterfactual AR specification
+            cfg.creditARlags       = [4 8 12];
+            cfg.creditLagCriterion = 'AIC';    % 'AIC' or 'BIC'
+                        
+            % Regime split on the Covid start date.
+            postCov = dateNumeric(:) >= cfg.covidStart;
+            lastPre = find(~postCov, 1, 'last');
+            assert(~isempty(lastPre), 'No pre-Covid observations found.');
+            
+            % ── STEP 1A: select AR lag length using pre-Covid data ────────────────
+            candidateLags = cfg.creditARlags;
+            maxLag        = max(candidateLags);
+
+            IC = NaN(numel(candidateLags),1);
+
+            % Use the SAME dependent-variable observations for all candidate models. 
+            % This makes AIC/BIC directly comparable across lag lengths.
+            commonRows = (maxLag+1:lastPre)';
+
+            for j = 1:numel(candidateLags)
+            
+                p = candidateLags(j);
+            
+                Xp = ones(numel(commonRows), 1+p);
+            
+                for k = 1:p
+                    Xp(:,1+k) = cred(commonRows-k);
+                end
+            
+                yp = cred(commonRows);
+            
+                % Remove any rows containing missing values
+                ok = all(~isnan(Xp),2) & ~isnan(yp);
+                Xp = Xp(ok,:);
+                yp = yp(ok);
+            
+                % Estimate AR(p)
+                bp    = Xp \ yp;
+                resid = yp - Xp*bp;
+            
+                n = numel(yp);
+                K = size(Xp,2);          % intercept + p AR coefficients
+                SSE = sum(resid.^2);
+            
+                switch upper(cfg.creditLagCriterion)
+            
+                    case 'AIC'
+                        IC(j) = n*log(SSE/n) + 2*K;
+            
+                    case 'BIC'
+                        IC(j) = n*log(SSE/n) + K*log(n);
+            
+                    otherwise
+                        error('cfg.creditLagCriterion must be either AIC or BIC.');
+            
+                end
+            end
+
+            % Select lag with lowest information criterion
+            [~, bestIdx] = min(IC);
+            nLag = candidateLags(bestIdx);
+
+            fprintf('  Global-credit AR lag selected by %s: %d quarters\n', cfg.creditLagCriterion, nLag);
+
+            % ── STEP 1B: estimate selected AR model on pre-Covid data ─────────────
+            Xar = ones(numel(cred), 1+nLag);
+            
+            for k = 1:nLag
+                Xar(k+1:end,1+k) = cred(1:end-k);
+            end
+            
+            fitRows = (nLag+1:lastPre)';
+            fitRows = fitRows(all(~isnan(Xar(fitRows,:)),2) & ~isnan(cred(fitRows)));
+            
+            bAR = Xar(fitRows,:) \ cred(fitRows);
+
+            cred_cf = cred;
+
+            for t = lastPre+1 : numel(cred)
+                lags = cred_cf(t-1:-1:t-nLag);
+                cred_cf(t) = bAR(1) + bAR(2:end)' * lags;
+            end
+            
+            % ── STEP 2: 3-year change — actual & counterfactual ─
+            horizon = 12;                            % 3 years × 4 quarters
+            cred_g3y    = NaN(numel(cred), 1);       % actual
+            cred_cf_g3y = NaN(numel(cred_cf), 1);    % counterfactual
+            cred_g3y(horizon+1:end)    = cred(horizon+1:end)    - cred(1:end-horizon);
+            cred_cf_g3y(horizon+1:end) = cred_cf(horizon+1:end) - cred_cf(1:end-horizon);
+            
+            % ── STEP 3: regress 3y growth on (growth negative AND pre-Covid) dummy ─
+            negPreG = double((cred_cf_g3y < 0) & ~postCov);
+            ook  = ~isnan(cred_cf_g3y);
+            Xreg = [ones(sum(ook),1), negPreG(ook)];
+            bhat = Xreg \ cred_cf_g3y(ook);           % bhat(1)=intercept, bhat(2)=betahat (dummy)
+            
+            % ── STEP 4: filtered growth = 3y growth − betahat*dummy ─────────────
+            cred_cf_g3y_filt = cred_cf_g3y - bhat(2) * negPreG;
+            
+            % ── STEP 5: chart ───────────────────────────────────────────────────
+            %figure;
+            %plot(dateNumeric, cred_g3y,         '-b', ...
+            %     dateNumeric, cred_cf_g3y,      '-r', ...
+            %     dateNumeric, cred_cf_g3y_filt, '-k', 'LineWidth', 1.2);
+            %datetick('x','yyyy');
+            %legend('actual 3y growth', ...
+            %       'counterfactual 3y growth', ...
+            %       'filtered (growth − \beta\cdotdummy)', ...
+            %       'Location','best');
+            %title('Global credit: 3y growth — actual, counterfactual, filtered');
+            %grid on;
+            
+            % ── Seed the first xxx (NaN) values of the filtered 3y growth ─────────
+            % A note: this need to be automated (important if u change
+            % horizon = 12 this will also need to be changed)
+            seed = [1.634735264; 1.751523917; 1.501247401; 1.921876285; ...
+                    2.888871897; 3.480097204; 4.006020539; 3.321334864; ...
+                    1.724143428; 1.467491082; 2.283385429; 2.590708225]; 
+
+            % Number of missing observations at the beginning of the series
+            firstValid = find(~isnan(cred_cf_g3y_filt), 1, 'first');
+            nSeed = firstValid - 1;
+            
+            % Check that enough manually-computed values are available
+            assert(nSeed <= numel(seed), ...
+                'Not enough seed values: %d required but only %d supplied.', ...
+                nSeed, numel(seed));
+            
+            % Fill only the required initial observations
+            cred_cf_g3y_filt(1:nSeed) = seed(1:nSeed);  
+
+            % Store final transformed series for all subsequent specifications.
+            global_credit_filt_cache = cred_cf_g3y_filt;
+        
+        else
+    
+            fprintf('  Reusing cached global-credit transformation...\n');
+    
+        end
+
+        % Put transformed credit variable into the current specification.
+        explvar(:, cred_col) = global_credit_filt_cache;
+
+    end
 
     %% ── Recursive QR loop ───────────────────────────────────────────────
     %
@@ -425,6 +532,7 @@ for spec = 1:nSpec
     fprintf('  WIS = %.4f\n', avg_wis(spec));
 
 end
+
 fprintf('\nEstimation wall-clock: %.1f s\n', toc);
 
 %% ════════════════════════════════════════════════════════════════════════
