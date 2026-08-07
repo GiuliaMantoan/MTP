@@ -1,17 +1,17 @@
 % clean
 close all; clear; clc;
 
-opts = spreadsheetImportOptions("NumVariables", 6);
+opts = spreadsheetImportOptions("NumVariables", 5);
 opts.Sheet = "UK_monthly";
-opts.DataRange = "A2:F666";
-opts.VariableNames = ["ccode", "date", "g4Infl", "Oil", "ue", "vu_tight"];
-opts.VariableTypes = ["categorical", "string", "double", "double", "double", "double"];
+opts.DataRange = "A2:E675";
+opts.VariableNames = ["date", "g4Infl", "Oil", "ue", "vu_tight"];
+opts.VariableTypes = ["string", "double", "double", "double", "double"];
 opts = setvaropts(opts, "date", "WhitespaceRule", "preserve");
-opts = setvaropts(opts, ["ccode", "date"], "EmptyFieldRule", "auto");
-kf_data = readtable("C:\Users\simon\Dropbox\BoE-KCL Macro Forecasting\Data\others\NAIRU_est.xlsx", opts, "UseExcel", false);
+opts = setvaropts(opts, ["date"], "EmptyFieldRule", "auto");
+kf_data = readtable("C:\Users\ucei648\OneDrive - University College London\Desktop\MTP\IaR_GaR_April_2026\Data\others\NAIRU_est.xlsx", opts, "UseExcel", false);
 clear opts
 
-addpath('C:\Users\simon\Dropbox\BoE-KCL Macro Forecasting\Codes\functions\Kalman_filter')
+addpath('C:\Users\ucei648\OneDrive - University College London\Desktop\MTP\IaR_GaR_April_2026\functions\Kalman_filter')
 
 %% Converting data format.
 % Data is in strings
@@ -29,7 +29,7 @@ kf_data.date_dt = datetime(year, months, 1);
 % Identify the last index in Q4 1996
 start_date    = datetime(1971,2,1);  % first obs available
 est_date      = datetime(1988,1,1);  % first point at which the filtered series is produced
-end_date      = datetime(2025,3,1);  % last obs available
+end_date      = datetime(2026,2,1);  % last obs available
 
 idxstart       = find(kf_data.date_dt <= start_date, 1, 'last'); % idx of first obs
 idxest       = find(kf_data.date_dt <= est_date, 1, 'last'); % idx of first point at which filtered series is produced

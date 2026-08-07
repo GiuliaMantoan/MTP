@@ -71,12 +71,12 @@ cfg.var.persist = {'avgcpi'};                     % inflation persistence
 cfg.var.expect  = {'infl1_m'};                    % inflation expectations
 %                  'infl2_m'                       % (alternative: 2y ahead expectations)
 
-cfg.var.slack   = {'ue'};         % economic slack
+cfg.var.slack   = {'ue', 'vu_tightness'};         % economic slack
 %                  'ugap_hp_filter_lambda_129600'  % (alternative: unemployment gap HP)
 %                  'ugap_kalman_filter'            % (alternative: unemployment gap Kalman)
 %                  'vu_tightness'                  % (alternative: v/u ratio level)
 
-cfg.var.supply  = {'yoy_growth_import_deflator', 'g4oil'}; % supply / external
+cfg.var.supply  = {'yoy_growth_import_deflator', 'g4oil', 'g4cpicore_global'}; % supply / external
 %                  'g4oil'                         % (alternative: oil price inflation)
 %                  'g4cpicore_global'              % (alternative: G7 core inflation)
 
@@ -101,7 +101,7 @@ cfg.horizons  = 37;            % h=1 current; h=2..37 → 1..36 months ahead
 cfg.quantiles = 0.05:0.05:0.95;
 
 % Bootstrap  *** SET nboot = 5000 FOR PRODUCTION RUNS ***
-cfg.bst.nboot     = 1000;
+cfg.bst.nboot     = 10;
 cfg.bst.blocksize = 24;
 cfg.bst.ci        = 68;
 
@@ -165,6 +165,7 @@ actualvar        = [];   % nOrigins × horizons  (actual dep-var for WIS)
 %% ════════════════════════════════════════════════════════════════════════
 
 tic;
+
 for spec = 1:nSpec
 
     fprintf('\n── Spec %d/%d: %s\n', spec, nSpec, spec_names{spec});
