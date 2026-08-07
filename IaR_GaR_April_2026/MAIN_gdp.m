@@ -86,7 +86,7 @@ cfg.var.macro_cond  = {'g4_import_deflator_fuel'}; % nominal / external indicato
 
 % Distribution model
 %   2 = Skew-t  |  3 = Semi-parametric  |  4 = Two-piece Normal
-cfg.model_selection = 3;
+cfg.model_selection = 2;
 cfg.modellist       = {'ols', 'skewt', 'semi-param', 'two-piece-normal'};
 
 % Spec selection
@@ -117,7 +117,7 @@ cfg.horizons  = 13;            % h=1 current; h=2..13 → 1..12 quarters ahead
 cfg.quantiles = 0.05:0.05:0.95;
 
 % Bootstrap  *** SET nboot = 5000 FOR PRODUCTION RUNS ***
-cfg.bst.nboot     = 10;
+cfg.bst.nboot     = 5000;
 cfg.bst.blocksize = 8;
 cfg.bst.ci        = 68;
 
