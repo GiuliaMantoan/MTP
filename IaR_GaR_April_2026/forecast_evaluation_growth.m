@@ -24,74 +24,74 @@
 %%      via monotone interpolation; BVAR uses Normal(pred_mu, pred_sigma).
 %%    - Covid origins (2020Q1–2022Q1) are set to NaN for all models.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
+ 
 close all; clear; clc;
-
+ 
 %% ── Paths ────────────────────────────────────────────────────────────────
 scriptDir = fileparts(mfilename('fullpath'));
 outDir    = fullfile(scriptDir, 'Outputs');
 evalDir   = fullfile(outDir, 'forecast_evaluation');
 if ~exist(evalDir,'dir'), mkdir(evalDir); end
-
+ 
 %% ════════════════════════════════════════════════════════════════════════
 %%  CONFIGURATION  ← edit here
 %% ════════════════════════════════════════════════════════════════════════
-
+ 
 % Horizons to evaluate (in quarters): 0 = nowcast, 1 = 1Q ahead, …, 12 = 3Y ahead
 cfg.eval_horizons = 0:12;
-
+ 
 % Common evaluation window  (pinned to fan chart availability)
 cfg.eval_start = datetime('30-Sep-2007', 'InputFormat', 'dd-MMM-yyyy');
 cfg.eval_end   = datetime('31-Mar-2024', 'InputFormat', 'dd-MMM-yyyy');
-
+ 
 % Covid exclusion: origins in [covidStart, covidEnd] are set to NaN in all models.
 cfg.covidStart = datetime(2020, 3, 31);   % Q1 2020
 cfg.covidEnd   = datetime(2022, 3, 31);   % Q1 2022
-
+ 
 % Fan chart settings
 cfg.fanchart.start_date = datetime('30-Sep-2007', 'InputFormat', 'dd-MMM-yyyy');
 cfg.fanchart.end_date   = datetime('31-Mar-2024', 'InputFormat', 'dd-MMM-yyyy');
 cfg.fanchart.end_fcst   = datetime('30-Mar-2027', 'InputFormat', 'dd-MMM-yyyy');
 cfg.fanchart.covid_date = datetime('30-Jun-2020', 'InputFormat', 'dd-MMM-yyyy');
-
+ 
 % Root directory for boefsctdata_growth (needs Data\kcl_data\ subfolder)
 cfg.paths.boe_root  = scriptDir;
 cfg.paths.qr_pred_q = fullfile(outDir, 'predicted_quantiles_gdp_OOS.mat');
 cfg.paths.qr_actual = fullfile(outDir, 'actual_gdp_yoy_OOS.mat');
 cfg.paths.bvar      = fullfile(outDir, 'BVAR', 'BVAR_gdp_pred_q.mat');
-
+ 
 %% ── Global settings ──────────────────────────────────────────────────────
 set(0,'defaultAxesFontName', 'Times');
 set(0,'defaultAxesLineStyleOrder','-|--|:', 'defaultLineLineWidth', 1);
 rng(0, 'twister');
-
+ 
 addpath(fullfile(scriptDir, 'intermediate_codes'));
 addpath(fullfile(scriptDir, 'functions'));
 addpath(fullfile(scriptDir, 'functions', 'azzalini'));
 addpath(fullfile(scriptDir, 'functions', 'CRPS'));
-
+ 
 nHor    = numel(cfg.eval_horizons);
 models  = {'fanchart', 'qr', 'bvar'};
 nModels = numel(models);
-
+ 
 % Shared deterministic quantile grid (999 points)
 tau_grid = (1:999)' / 1000;
 % Left-tail weight v(tau) = (1-tau)^2  [QW=5 — GDP downside / GaR focus]
 v_left   = (1 - tau_grid).^2;
-
+ 
 % CRPS and left-tail wCRPS helpers
 crps_from_qgrid  = @(q, y) 2 * mean((double(y < q) - tau_grid) .* (q - y));
 wcrps_from_qgrid = @(q, y) 2 * mean(v_left .* (double(y < q) - tau_grid) .* (q - y));
-
+ 
 % Quantile levels used for sharpness interval widths
 q_sharp_lev = [0.05, 0.10, 0.25, 0.35, 0.50, 0.65, 0.75, 0.90, 0.95];
 nQL = numel(q_sharp_lev);
-
+ 
 %% ════════════════════════════════════════════════════════════════════════
 %%  SHARED ACTUAL DATA  (g4rgdp — loaded once, aligned to common grid)
 %% ════════════════════════════════════════════════════════════════════════
 fprintf('Building shared actual data (g4rgdp)...\n');
-
+ 
 ad_shared = load(cfg.paths.qr_actual, 'actual_var', 'dateNumeric_full', 'idx_est');
 gdp_series    = ad_shared.actual_var;           % full quarterly series
 gdp_datenum   = ad_shared.dateNumeric_full;     % datenum for every row
@@ -99,12 +99,12 @@ gdp_ym        = floor(gdp_datenum / 30.4375);  % rough ym  — use datetime inst
 % More precise: convert to datetime then compute ym
 gdp_dt        = datetime(gdp_datenum, 'ConvertFrom', 'datenum');
 gdp_ym        = year(gdp_dt)*12 + month(gdp_dt);
-
+ 
 % Common quarterly evaluation grid
 eval_origins = (cfg.eval_start : calmonths(3) : cfg.eval_end)';
 nQOrig_eval  = numel(eval_origins);
 eval_ym      = year(eval_origins)*12 + month(eval_origins);
-
+ 
 % actualvar(ih, j) = g4rgdp realisation cfg.eval_horizons(ih) quarters
 % ahead of eval_origins(j).   k quarters = 3k months in ym space.
 actualvar = NaN(nHor, nQOrig_eval);
@@ -118,7 +118,7 @@ for j = 1:nQOrig_eval
         end
     end
 end
-
+ 
 % Covid exclusion — two-dimensional:
 %   (1) Origin-based: exclude any origin whose conditioning date is in the
 %       Covid window (so no forecasts are made from Covid origins).
@@ -130,11 +130,11 @@ end
 % Both masks extend 4 quarters beyond covidEnd to cover YoY base effects
 % and align with the QR estimation window.
 covidEnd_ext_eval = cfg.covidEnd + calquarters(4);   % Q1 2023
-
+ 
 % (1) Origin mask
 covid_mask = eval_origins >= cfg.covidStart & eval_origins <= covidEnd_ext_eval;
 actualvar(:, covid_mask) = NaN;
-
+ 
 % (2) Target mask: for each horizon, shift the Covid window backward by h
 %     quarters so that (origin + h) ∈ Covid ⟹ NaN
 for ih = 1:nHor
@@ -144,9 +144,9 @@ for ih = 1:nHor
     tgt_covid  = tgt_dates >= cfg.covidStart & tgt_dates <= covidEnd_ext_eval;
     actualvar(ih, tgt_covid) = NaN;
 end
-
+ 
 clearvars ad_shared gdp_series gdp_datenum gdp_dt;
-
+ 
 %% ════════════════════════════════════════════════════════════════════════
 %%  LOAD ALL MODELS AND COMPUTE PITs, CRPS, wCRPS, SHARPNESS
 %%
@@ -155,16 +155,16 @@ clearvars ad_shared gdp_series gdp_datenum gdp_dt;
 %%  wcrps_all{m} — nHor × nQOrig_eval  left-tail wCRPS  [v=(1-tau)^2]
 %%  qntl_all{m}  — nHor × nQOrig_eval × nQL  quantiles (sharpness)
 %% ════════════════════════════════════════════════════════════════════════
-
+ 
 zinf_all     = cell(nModels, 1);
 crps_all     = cell(nModels, 1);
 wcrps_all    = cell(nModels, 1);
 qntl_all     = cell(nModels, 1);
 originDT_all = cell(nModels, 1);
-
+ 
 %% ── (1) Fan chart ────────────────────────────────────────────────────────
 fprintf('Loading BOE fan chart...\n');
-
+ 
 % boefsctdata_growth clears most of the workspace via clearvars -except.
 % Workaround: save/restore workspace around the call.
 start_date   = cfg.fanchart.start_date;
@@ -176,7 +176,7 @@ varnames     = {'g4rgdp'};
 ctrynames    = {'UK'};
 momentlist   = {'fcstmean','fcststdev','fcstskew'};
 outputFolder = evalDir;
-
+ 
 % boefsctdata_growth reads the Excel via [cd '\Data\kcl_data\...'],
 % so we must be in scriptDir before calling it.
 % After clearvars, only the exception variables survive (including outputFolder).
@@ -190,27 +190,27 @@ load(fullfile(outputFolder, 'ws_tmp_growth.mat')); % restore full workspace
 delete(fullfile(evalDir, 'ws_tmp_growth.mat'));
 mtestdata = mtestdata_fc;
 clear mtestdata_fc;
-
+ 
 % Extract parameters: rows = horizons 1..13 (h=1 nowcast), cols = origins
 modevar_fc = mtestdata(:, 1:3:end);   % 13 × nQOrig_fc
 meanvar_fc = mtestdata(:, 2:3:end);
 dispvar_fc = mtestdata(:, 3:3:end);
 nQOrig_fc  = size(meanvar_fc, 2);
-
+ 
 % Fan chart origin datetimes (quarterly from start_date)
 fc_origins = (cfg.fanchart.start_date : calmonths(3) : ...
               cfg.fanchart.start_date + calmonths(3*(nQOrig_fc-1)))';
 fc_ym      = year(fc_origins)*12 + month(fc_origins);
-
+ 
 zinf_fc  = NaN(nHor, nQOrig_eval);
 crps_fc  = NaN(nHor, nQOrig_eval);
 wcrps_fc = NaN(nHor, nQOrig_eval);
 qntl_fc  = NaN(nHor, nQOrig_eval, nQL);
-
+ 
 for j = 1:nQOrig_eval
     fc_col = find(fc_ym == eval_ym(j), 1);
     if isempty(fc_col), continue; end
-
+ 
     for ih = 1:nHor
         % Fan chart row index: eval horizon k → h=k+1 (1-based)
         row = cfg.eval_horizons(ih) + 1;
@@ -219,7 +219,7 @@ for j = 1:nQOrig_eval
         mo = modevar_fc(row, fc_col);
         dv = dispvar_fc(row, fc_col);
         if isnan(mn) || isnan(mo) || isnan(dv) || dv <= 0, continue; end
-
+ 
         if mn ~= mo
             % Asymmetric TPN
             gam = stdtogam(mn, mo, dv);
@@ -240,152 +240,152 @@ for j = 1:nQOrig_eval
             q_s    = mn + dv .* norminv(q_sharp_lev);
             m_par  = mn;  s1 = dv;  s2 = dv;   % for ftp PIT
         end
-
+ 
         act = actualvar(ih, j);
         if isnan(act), continue; end
-
+ 
         % Sharpness set only for non-Covid (origin,horizon) pairs
         qntl_fc(ih, j, :) = q_s;
-
+ 
         zinf_fc(ih, j) = integral(@(y) ftp(y, m_par, s1, s2), -1e4, act, ...
                                    'RelTol', 1e-6, 'AbsTol', 1e-10);
         crps_fc(ih,j)  = crps_from_qgrid(q_grid, act);
         wcrps_fc(ih,j) = wcrps_from_qgrid(q_grid, act);
     end
 end
-
+ 
 zinf_all{1}     = zinf_fc;
 crps_all{1}     = crps_fc;
 wcrps_all{1}    = wcrps_fc;
 qntl_all{1}     = qntl_fc;
 originDT_all{1} = eval_origins;
-
+ 
 clearvars modevar_fc meanvar_fc dispvar_fc fc_origins fc_ym fc_col ...
           zinf_fc crps_fc wcrps_fc qntl_fc mtestdata ...
           start_date end_date end_fcst covid_date fullFileName varnames ctrynames momentlist outputFolder ...
           gam sig ih j row m_par s1 s2 mn mo dv act p_left lm lm_s q_s q_grid nQOrig_fc;
-
+ 
 %% ── (2) RASS Quantile Regression ─────────────────────────────────────────
 %  The GDP RASS saves pred_q (nOrigins × 19 × 13) — 19 quantile levels per
 %  origin and horizon.  PIT and CRPS are computed via monotone interpolation
 %  of these 19 quantiles onto the 999-point tau_grid.  No skew-t fitting needed.
 fprintf('Loading RASS model...\n');
-
+ 
 qd = load(cfg.paths.qr_pred_q, 'pred_q');
 ad = load(cfg.paths.qr_actual, 'actual_var', 'idx_est', 'dateNumeric_full');
-
+ 
 pred_q_qr  = qd.pred_q;                % nOrig_qr × 19 × 13
 quant_qr   = (0.05:0.05:0.95)';        % 19 × 1  (quantile levels in pred_q)
 nOrig_qr   = size(pred_q_qr, 1);
-
+ 
 qr_dt      = datetime(ad.dateNumeric_full(ad.idx_est : ad.idx_est + nOrig_qr - 1), ...
                        'ConvertFrom', 'datenum');
 qr_ym      = year(qr_dt)*12 + month(qr_dt);
-
+ 
 zinf_qr  = NaN(nHor, nQOrig_eval);
 crps_qr  = NaN(nHor, nQOrig_eval);
 wcrps_qr = NaN(nHor, nQOrig_eval);
 qntl_qr  = NaN(nHor, nQOrig_eval, nQL);
-
+ 
 for j = 1:nQOrig_eval
     t_idx = find(qr_ym == eval_ym(j), 1);
     if isempty(t_idx), continue; end
-
+ 
     for ih = 1:nHor
         k     = cfg.eval_horizons(ih);
         h_idx = k + 1;                           % pred_q h-index: 1=nowcast
         if h_idx > size(pred_q_qr, 3), continue; end
-
+ 
         q_vals = squeeze(pred_q_qr(t_idx, :, h_idx))';   % 19 × 1
         if all(isnan(q_vals)), continue; end
-
+ 
         act = actualvar(ih, j);
         if isnan(act), continue; end
-
+ 
         % Sharpness set only for non-Covid (origin,horizon) pairs
         qntl_qr(ih, j, :) = interp1(quant_qr, q_vals, q_sharp_lev, ...
                                      'linear', 'extrap');
-
+ 
         % PIT = F(act) = tau such that Q(tau) = act
         %       interp1 on (q_vals → quant_qr) inverts the quantile function
         pit = interp1(q_vals, quant_qr, act, 'linear', 'extrap');
         zinf_qr(ih, j) = min(max(pit, 0), 1);
-
+ 
         % Expand 19-quantile grid to 999 points for CRPS
         q_fine = interp1(quant_qr, q_vals, tau_grid, 'linear', 'extrap');
-
+ 
         crps_qr(ih, j)  = crps_from_qgrid(q_fine, act);
         wcrps_qr(ih, j) = wcrps_from_qgrid(q_fine, act);
     end
 end
-
+ 
 zinf_all{2}     = zinf_qr;
 crps_all{2}     = crps_qr;
 wcrps_all{2}    = wcrps_qr;
 qntl_all{2}     = qntl_qr;
 originDT_all{2} = eval_origins;
-
+ 
 clearvars qd ad pred_q_qr quant_qr nOrig_qr qr_dt qr_ym ...
           zinf_qr crps_qr wcrps_qr qntl_qr ...
           ih j k h_idx t_idx q_vals act pit q_fine;
-
+ 
 %% ── (3) BVAR  (Normal predictive — mean and std from Gibbs draws) ────────
 fprintf('Loading BVAR...\n');
-
+ 
 bd = load(cfg.paths.bvar, 'pred_mu', 'pred_sigma', 'dateNumeric_est');
 pred_mu_bv    = bd.pred_mu;      % nOrig_bv × 13
 pred_sigma_bv = bd.pred_sigma;   % nOrig_bv × 13
-
+ 
 bv_dt = datetime(bd.dateNumeric_est, 'ConvertFrom', 'datenum')';
 bv_ym = year(bv_dt)*12 + month(bv_dt);
-
+ 
 zinf_bv  = NaN(nHor, nQOrig_eval);
 crps_bv  = NaN(nHor, nQOrig_eval);
 wcrps_bv = NaN(nHor, nQOrig_eval);
 qntl_bv  = NaN(nHor, nQOrig_eval, nQL);
-
+ 
 for j = 1:nQOrig_eval
     t_idx = find(bv_ym == eval_ym(j), 1);
     if isempty(t_idx), continue; end
-
+ 
     for ih = 1:nHor
         k     = cfg.eval_horizons(ih);
         h_idx = k + 1;
         if h_idx > size(pred_mu_bv, 2), continue; end
-
+ 
         mu_bv    = pred_mu_bv(t_idx, h_idx);
         sigma_bv = pred_sigma_bv(t_idx, h_idx);
         if isnan(mu_bv) || isnan(sigma_bv) || sigma_bv <= 0, continue; end
-
+ 
         act = actualvar(ih, j);
         if isnan(act), continue; end
-
+ 
         % Sharpness set only for non-Covid (origin,horizon) pairs
         qntl_bv(ih, j, :) = norminv(q_sharp_lev, mu_bv, sigma_bv);
-
+ 
         zinf_bv(ih, j) = normcdf(act, mu_bv, sigma_bv);
-
+ 
         q_grid = norminv(tau_grid, mu_bv, sigma_bv);
         crps_bv(ih, j)  = crps_from_qgrid(q_grid, act);
         wcrps_bv(ih, j) = wcrps_from_qgrid(q_grid, act);
     end
 end
-
+ 
 zinf_all{3}     = zinf_bv;
 crps_all{3}     = crps_bv;
 wcrps_all{3}    = wcrps_bv;
 qntl_all{3}     = qntl_bv;
 originDT_all{3} = eval_origins;
-
+ 
 clearvars bd pred_mu_bv pred_sigma_bv bv_dt bv_ym ...
           zinf_bv crps_bv wcrps_bv qntl_bv ...
           ih j k h_idx t_idx mu_bv sigma_bv act q_grid;
-
-
+ 
+ 
 %% ════════════════════════════════════════════════════════════════════════
 %%  RUN TESTS FOR EACH MODEL
 %% ════════════════════════════════════════════════════════════════════════
-
+ 
 results = struct();
 for m = 1:nModels
     results.(models{m}).ksinf        = NaN(nHor, 1);
@@ -405,56 +405,56 @@ for m = 1:nModels
     results.(models{m}).crps_mean    = NaN(nHor, 1);
     results.(models{m}).wcrps_mean   = NaN(nHor, 1);   % left-tail wCRPS [v=(1-tau)^2]
 end
-
+ 
 lags     = -1;
 prewhite =  0;
 z_u = 0.95;  z_l = 0.05;  df = 5;
 rvec_rs = linspace(0, 1, 1000);
-
+ 
 for m = 1:nModels
     mod  = models{m};
     zinf = zinf_all{m};
     fprintf('\nRunning tests: %s ...\n', mod);
-
+ 
     KS_vec  = zeros(nHor, 1);
     CVM_vec = zeros(nHor, 1);
-
+ 
     for i = 1:nHor
         z_row = zinf(i, :)';
         z_row = z_row(~isnan(z_row));
         if numel(z_row) < 5, continue; end
-
+ 
         % KS
         [results.(mod).ksinf(i), results.(mod).ksinfpv(i)] = kstestu(z_row);
-
+ 
         % Rossi-Sekhposyan (2019)
         [~, stat_i, logic_i, KS_vec(i), CVM_vec(i)] = rs_test(z_row, rvec_rs);
         results.(mod).rs_ks_test(i)    = stat_i.ks_stat;
         results.(mod).rs_cvm_test(i)   = stat_i.cvm_stat;
         results.(mod).rs_ks_logic(i,:)  = logic_i.ks_array;
         results.(mod).rs_cvm_logic(i,:) = logic_i.cvm_array;
-
+ 
         % Berkowitz (2001)
         [results.(mod).bert1(i), results.(mod).bert2(i), ...
          results.(mod).berK1(i), results.(mod).berK2(i)] = berk(zinf(i, :));
-
+ 
         % Knueppel (2015)
         [results.(mod).knueppel_stat(i), results.(mod).knueppel_pval(i)] = ...
             alpha0_1234_NW(zinf(i,:), lags, prewhite);
-
+ 
         % Mitchell-Weale (2023)
         stat_u = MW_alpha0_1234_NW(zinf(i,:), lags, prewhite, z_l, z_u);
         stat_f = freqTestInCensoredRegion(zinf(i,:), lags, prewhite, z_l, z_u);
         results.(mod).MW_stat(i) = stat_u + stat_f;
         results.(mod).MW_pval(i) = 1 - chi2cdf(results.(mod).MW_stat(i), df);
-
+ 
         % CRPS mean (uniform)
         crps_row = crps_all{m}(i, :);
         crps_row = crps_row(~isnan(crps_row));
         if ~isempty(crps_row)
             results.(mod).crps_mean(i) = mean(crps_row);
         end
-
+ 
         % wCRPS mean (left-tail weighted, v=(1-tau)^2)
         wcrps_row = wcrps_all{m}(i, :);
         wcrps_row = wcrps_row(~isnan(wcrps_row));
@@ -462,62 +462,62 @@ for m = 1:nModels
             results.(mod).wcrps_mean(i) = mean(wcrps_row);
         end
     end
-
+ 
     results.(mod).KS_vec  = KS_vec;
     results.(mod).CVM_vec = CVM_vec;
 end
-
+ 
 %% Galvao-Mantoan-Mitchell  (computationally intensive — runs per model)
-% MC     = 1000;
-% bootMC = 1000;
-% rng(bootMC, 'twister');
-% rvec_gmm = 0:0.001:1;
-% 
-% for m = 1:nModels
-%     mod  = models{m};
-%     zinf = zinf_all{m};
-%     z    = zinf';
-%     P    = size(z, 1);
-%     el   = floor(P^(1/4));
-%     Hz   = size(z, 2);
-%     KS   = results.(mod).KS_vec(:)';
-%     CVM  = results.(mod).CVM_vec(:)';
-% 
-%     QVrejvecs       = zeros(MC, 3);
-%     CVMrejvecs      = zeros(MC, 3);
-%     QVrejvecs_bonf  = zeros(MC, 3);
-%     CVMrejvecs_bonf = zeros(MC, 3);
-% 
-%     parfor j = 1:MC
-%         stream1 = RandStream('mrg32k3a', 'seed', 4829575);
-%         stream1.Substream = j;
-%         [QVrej_j, CVMrej_j, QVbonf_j, CVMbonf_j] = ...
-%             size_statistic_h2(z, KS, CVM, Hz, stream1, rvec_gmm, el, bootMC);
-%         QVrejvecs(j,:)       = QVrej_j;
-%         CVMrejvecs(j,:)      = CVMrej_j;
-%         QVrejvecs_bonf(j,:)  = QVbonf_j;
-%         CVMrejvecs_bonf(j,:) = CVMbonf_j;
-%     end
-% 
-%     results.(mod).gmm_ks       = mean(QVrejvecs,      1);
-%     results.(mod).gmm_cvm      = mean(CVMrejvecs,      1);
-%     results.(mod).gmm_ks_bonf  = mean(QVrejvecs_bonf, 1);
-%     results.(mod).gmm_cvm_bonf = mean(CVMrejvecs_bonf,1);
-% 
-%     fprintf('GMM done: %s\n', mod);
-% end
+MC     = 1000;
+bootMC = 1000;
+rng(bootMC, 'twister');
+rvec_gmm = 0:0.001:1;
 
+for m = 1:nModels
+    mod  = models{m};
+    zinf = zinf_all{m};
+    z    = zinf';
+    P    = size(z, 1);
+    el   = floor(P^(1/4));
+    Hz   = size(z, 2);
+    KS   = results.(mod).KS_vec(:)';
+    CVM  = results.(mod).CVM_vec(:)';
+
+    QVrejvecs       = zeros(MC, 3);
+    CVMrejvecs      = zeros(MC, 3);
+    QVrejvecs_bonf  = zeros(MC, 3);
+    CVMrejvecs_bonf = zeros(MC, 3);
+
+    parfor j = 1:MC
+        stream1 = RandStream('mrg32k3a', 'seed', 4829575);
+        stream1.Substream = j;
+        [QVrej_j, CVMrej_j, QVbonf_j, CVMbonf_j] = ...
+            size_statistic_h2(z, KS, CVM, Hz, stream1, rvec_gmm, el, bootMC);
+        QVrejvecs(j,:)       = QVrej_j;
+        CVMrejvecs(j,:)      = CVMrej_j;
+        QVrejvecs_bonf(j,:)  = QVbonf_j;
+        CVMrejvecs_bonf(j,:) = CVMbonf_j;
+    end
+
+    results.(mod).gmm_ks       = mean(QVrejvecs,      1);
+    results.(mod).gmm_cvm      = mean(CVMrejvecs,      1);
+    results.(mod).gmm_ks_bonf  = mean(QVrejvecs_bonf, 1);
+    results.(mod).gmm_cvm_bonf = mean(CVMrejvecs_bonf,1);
+
+    fprintf('GMM done: %s\n', mod);
+end
+ 
 %% ════════════════════════════════════════════════════════════════════════
 %%  SAVE COMPARISON RESULTS
 %% ════════════════════════════════════════════════════════════════════════
-
+ 
 horiz    = cfg.eval_horizons(:);
 filename = fullfile(evalDir, 'comparison_fcst_eval_growth.xlsx');
-
+ 
 buildTab = @(field) array2table( ...
     [horiz, cell2mat(cellfun(@(m) results.(m).(field), models(:)', 'UniformOutput', false))], ...
     'VariableNames', [{'horizon'}, models(:)']);
-
+ 
 writetable(buildTab('ksinf'),         filename, 'Sheet', 'KS_stat');
 writetable(buildTab('ksinfpv'),       filename, 'Sheet', 'KS_pval');
 writetable(buildTab('rs_ks_test'),    filename, 'Sheet', 'RS_KS_stat');
@@ -532,31 +532,31 @@ writetable(buildTab('MW_stat'),       filename, 'Sheet', 'MW_stat');
 writetable(buildTab('MW_pval'),       filename, 'Sheet', 'MW_pval');
 writetable(buildTab('crps_mean'),     filename, 'Sheet', 'CRPS_mean');
 writetable(buildTab('wcrps_mean'),    filename, 'Sheet', 'wCRPS_left_mean');
-
-% gmm_ks_mat  = cell2mat(cellfun(@(m) results.(m).gmm_ks(:)',  models(:)', 'UniformOutput', false)')';
-% gmm_cvm_mat = cell2mat(cellfun(@(m) results.(m).gmm_cvm(:)', models(:)', 'UniformOutput', false)')';
-% gmm_tab = table(models', gmm_ks_mat, gmm_cvm_mat, ...
-%     'VariableNames', {'model','GMM_KS_std_bonf_w_wi','GMM_CVM_std_bonf_w_wi'});
-% writetable(gmm_tab, filename, 'Sheet', 'GMM_summary');
-
+ 
+gmm_ks_mat  = cell2mat(cellfun(@(m) results.(m).gmm_ks(:)',  models(:)', 'UniformOutput', false)')';
+gmm_cvm_mat = cell2mat(cellfun(@(m) results.(m).gmm_cvm(:)', models(:)', 'UniformOutput', false)')';
+gmm_tab = table(models', gmm_ks_mat, gmm_cvm_mat, ...
+    'VariableNames', {'model','GMM_KS_std_bonf_w_wi','GMM_CVM_std_bonf_w_wi'});
+writetable(gmm_tab, filename, 'Sheet', 'GMM_summary');
+ 
 %% ════════════════════════════════════════════════════════════════════════
 %%  PRINT SUMMARY TABLES  (one per model)
 %% ════════════════════════════════════════════════════════════════════════
-
+ 
 model_labels = {'Fan Chart (BOE)', 'QR Skew-t', 'BVAR'};
-
+ 
 sel_h   = [0 1 2 3 4 8 12];
 sel_idx = arrayfun(@(h) find(cfg.eval_horizons == h, 1), sel_h);
 % sel_h and sel_idx used both in the plain text printer and the LaTeX printer
-
+ 
 frcode = @(v) char(70*(~isnan(v) & v < 0.5) + ...
                    82*(~isnan(v) & v >= 0.5) + ...
                    45*isnan(v));
-
+ 
 hdr = ['  h   | Knu pval  |  MW pval  | CRPS mean | wCRPS(L)' ...
        ' | CvM 10% | CvM  5% | CvM  1%'];
 sep = repmat('-', 1, numel(hdr));
-
+ 
 for m = 1:nModels
     mod = models{m};
     fprintf('\n%s\n', sep);
@@ -578,24 +578,24 @@ for m = 1:nModels
     end
     fprintf('%s\n', sep);
 end
-
+ 
 %% ════════════════════════════════════════════════════════════════════════
 %%  LATEX TABLE  — p-values + CRPS + wCRPS, all models, selected horizons
 %%
 %%  Paste directly into Overleaf.  Significance stars on p-values:
 %%    *** p < 0.01  |  ** p < 0.05  |  * p < 0.10
 %% ════════════════════════════════════════════════════════════════════════
-
+ 
 pstar = @(p) [repmat('*', 1, (p<0.10) + (p<0.05) + (p<0.01))];
-
+ 
 % Column header: one column per model
 col_spec = ['l', repmat('c', 1, nModels)];
 col_hdrs = strjoin(cellfun(@(l) ['\textbf{', strrep(l,' ','\;'), '}'], ...
                    model_labels, 'UniformOutput', false), ' & ');
-
+ 
 latex_file = fullfile(evalDir, 'table_fcst_eval_growth.tex');
 fid = fopen(latex_file, 'w');
-
+ 
 fprintf(fid, '%% GDP forecast evaluation table — auto-generated\n');
 fprintf(fid, '\\begin{table}[htbp]\n');
 fprintf(fid, '\\centering\n');
@@ -606,7 +606,7 @@ fprintf(fid, '\\begin{tabular}{%s}\n', col_spec);
 fprintf(fid, '\\toprule\n');
 fprintf(fid, 'Horizon & %s \\\\\n', col_hdrs);
 fprintf(fid, '\\midrule\n');
-
+ 
 % Block printer (inline to avoid nested-function scoping issues in MATLAB scripts)
 tex_blocks = { ...
     'Knueppel (2015) p-value', 'knueppel_pval',  true;  ...
@@ -614,7 +614,7 @@ tex_blocks = { ...
     'CRPS (mean)',             'crps_mean',      false; ...
     'wCRPS left tail (mean)',  'wcrps_mean',     false  ...
 };
-
+ 
 for tb = 1:size(tex_blocks, 1)
     blk_label  = tex_blocks{tb, 1};
     blk_field  = tex_blocks{tb, 2};
@@ -638,7 +638,7 @@ for tb = 1:size(tex_blocks, 1)
         fprintf(fid, '%s \\\\\n', row);
     end
 end
-
+ 
 fprintf(fid, '\\bottomrule\n');
 fprintf(fid, '\\end{tabular}\n');
 fprintf(fid, '\\begin{tablenotes}\\small\n');
@@ -649,14 +649,14 @@ fprintf(fid, 'Covid origins (2020Q1--2022Q1) excluded.\n');
 fprintf(fid, '\\end{tablenotes}\n');
 fprintf(fid, '\\end{table}\n');
 fclose(fid);
-
+ 
 % Also print to console
 fprintf('\n\n%% ── LaTeX table ─────────────────────────────────────────\n');
 fid2 = fopen(latex_file, 'r');
 while ~feof(fid2), fprintf('%s\n', fgetl(fid2)); end
 fclose(fid2);
 fprintf('\nLaTeX table saved to %s\n', latex_file);
-
+ 
 %% ════════════════════════════════════════════════════════════════════════
 %%  SHARPNESS DIAGNOSTIC
 %%
@@ -664,15 +664,15 @@ fprintf('\nLaTeX table saved to %s\n', latex_file);
 %%    1=q05  2=q10  3=q25  4=q35  5=q50  6=q65  7=q75  8=q90  9=q95
 %% ════════════════════════════════════════════════════════════════════════
 fprintf('\nComputing sharpness widths...\n');
-
+ 
 h_vec_sharp  = cfg.eval_horizons(:);
 % 2×2 layout: Central 30% | Central 50% | Bottom 20% | Top 20%
 sharp_labels = {'Central 30%','Central 50%','Bottom 20%','Top 20%'};
 nW = numel(sharp_labels);
-
+ 
 mu_w = cell(nModels, 1);
 sd_w = cell(nModels, 1);
-
+ 
 for m = 1:nModels
     Q  = qntl_all{m};   % nHor × nQOrig_eval × 9
     % Quantile indices: 1=q05 2=q10 3=q25 4=q35 5=q50 6=q65 7=q75 8=q90 9=q95
@@ -687,7 +687,7 @@ for m = 1:nModels
         sd_w{m}(ih,:) = std(widths, 0, 2, 'omitnan')';
     end
 end
-
+ 
 % Print sharpness table
 fprintf('\n%s\n', repmat('─',1,70));
 fprintf('  SHARPNESS — Median interval widths by horizon\n');
@@ -707,7 +707,7 @@ for m = 1:nModels
     end
 end
 fprintf('%s\n', repmat('─',1,70));
-
+ 
 % ── Shared style ─────────────────────────────────────────────────────────
 colors_sh  = [0.12 0.47 0.71; 0.84 0.15 0.16; 0.17 0.63 0.17];
 fills_sh   = [0.70 0.80 1.00; 1.00 0.80 0.80; 0.80 1.00 0.80];
@@ -715,14 +715,14 @@ lssh       = {'-', '--', ':'};
 markers_sh = {'o', 's', '^'};
 lwsh       = 1.8;
 h_vec      = cfg.eval_horizons(:);
-
+ 
 %% ── CHART 1: Sharpness — 2×2 ─────────────────────────────────────────────
 fig_sh = figure('Name','Sharpness — GDP Growth','NumberTitle','off', ...
                 'Color','w','Position',[120 120 900 750]);
 tl_sh  = tiledlayout(fig_sh, 2, 2, 'TileSpacing','compact','Padding','loose');
 sgtitle(fig_sh, 'GDP Growth — Forecast Sharpness (median width ± 1 SD)', ...
         'FontSize', 12, 'FontWeight','bold');
-
+ 
 legH_sh = gobjects(nModels, 1);
 for iw = 1:nW
     ax = nexttile(tl_sh, iw);
@@ -753,18 +753,18 @@ try, lgd_sh.Layout.Tile = 'south'; catch
     set(lgd_sh,'Position',[0.25 0.01 0.50 0.04]); end
 exportgraphics(fig_sh, fullfile(evalDir,'sharpness_fcst_eval_growth.png'), 'Resolution',300);
 fprintf('\nSharpness chart saved.\n');
-
+ 
 %% ── CHART 2: Calibration p-values — 1×2 (Knueppel + Mitchell-Weale) ─────
 fig_pv = figure('Name','Calibration Tests — GDP Growth','NumberTitle','off', ...
                 'Color','w','Position',[80 80 900 420]);
 tl_pv  = tiledlayout(fig_pv, 1, 2, 'TileSpacing','compact','Padding','loose');
 sgtitle(fig_pv,'GDP Growth — Calibration Tests (p-values)', ...
         'FontSize',12,'FontWeight','bold');
-
+ 
 pval_fields = {'knueppel_pval','MW_pval'};
 pval_titles = {'Knueppel (2015) p-value','Mitchell-Weale (2023) p-value'};
 legH_pv = gobjects(nModels,1);
-
+ 
 for t = 1:2
     ax = nexttile(tl_pv, t);
     hold(ax,'on'); box(ax,'on'); grid(ax,'on');
@@ -790,19 +790,19 @@ try, lgd_pv.Layout.Tile = 'south'; catch
     set(lgd_pv,'Position',[0.20 0.01 0.60 0.04]); end
 exportgraphics(fig_pv, fullfile(evalDir,'pvalues_fcst_eval_growth.png'), 'Resolution',300);
 fprintf('\nCalibration p-value chart saved.\n');
-
+ 
 %% ── CHART 3: Cumulative CRPS & wCRPS — 2×2 ──────────────────────────────
 cum_h       = [1, 4];
 cum_h_names = {'1Q ahead (h=1)', '4Q ahead (h=4)'};
-
+ 
 fig_sc = figure('Name','Cumulative Scores — GDP Growth','NumberTitle','off', ...
                 'Color','w','Position',[100 100 1000 750]);
 tl_sc  = tiledlayout(fig_sc, 2, 2, 'TileSpacing','compact','Padding','loose');
 sgtitle(fig_sc,'GDP Growth — Cumulative CRPS & wCRPS (left tail)', ...
         'FontSize',12,'FontWeight','bold');
-
+ 
 legH_sc = gobjects(nModels,1);
-
+ 
 % Row 1: Cumulative CRPS at h=1 and h=4
 for ip = 1:2
     ax_c = nexttile(tl_sc, ip);
@@ -824,7 +824,7 @@ for ip = 1:2
     datetick(ax_c,'x','yyyy','keepticks','keeplimits'); xtickangle(ax_c,45);
     hold(ax_c,'off');
 end
-
+ 
 % Row 2: Cumulative wCRPS (left tail) at h=1 and h=4
 for ip = 1:2
     ax_w = nexttile(tl_sc, ip+2);
@@ -845,11 +845,11 @@ for ip = 1:2
     datetick(ax_w,'x','yyyy','keepticks','keeplimits'); xtickangle(ax_w,45);
     hold(ax_w,'off');
 end
-
+ 
 lgd_sc = legend(legH_sc, model_labels,'Orientation','horizontal','NumColumns',3);
 try, lgd_sc.Layout.Tile = 'south'; catch
     set(lgd_sc,'Position',[0.20 0.01 0.60 0.04]); end
 exportgraphics(fig_sc, fullfile(evalDir,'scores_fcst_eval_growth.png'), 'Resolution',300);
 fprintf('\nCumulative scores chart saved.\n');
-
+ 
 fprintf('\n── DONE: comparison saved to %s ──\n', filename);
