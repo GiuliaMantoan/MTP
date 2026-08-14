@@ -65,7 +65,7 @@ cfg.var.current_act = 'mgdp_yoy';                % current economic activity
 %                      'pmi_out_long'
 %                      'pmi_out_fut_long'
 
-cfg.var.leverage    = 'global_credit';            % leverage / credit-to-GDP
+cfg.var.leverage    =  'global_credit_level'; %'global_credit';            % leverage / credit-to-GDP
 %                      'delta_3y_credit_to_gdp_all'
 
 cfg.var.fci         = 'ciss_uk';                  % financial conditions
@@ -80,7 +80,7 @@ cfg.var.labour      = 'labour';                   % labour-market indicator
 
 % Collect in VAR order (dep var first, then predictors)
 cfg.varnames = {cfg.var.dep, cfg.var.current_act, cfg.var.leverage, ...
-                cfg.var.fci, cfg.var.macro_cond, cfg.var.labour};
+                cfg.var.fci, cfg.var.macro_cond};
 
 % Covid sample exclusion  — rows in [covidStart, covidEnd] are dropped from
 % both Y and X before estimation at every recursive origin.
