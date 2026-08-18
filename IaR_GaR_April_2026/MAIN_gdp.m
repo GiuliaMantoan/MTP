@@ -86,7 +86,7 @@ cfg.var.macro_cond  = {'g4_import_deflator_fuel'}; % nominal / external indicato
 
 % Distribution model
 %   2 = Skew-t  |  3 = Semi-parametric  |  4 = Two-piece Normal
-cfg.model_selection = 2;
+cfg.model_selection = 3;
 cfg.modellist       = {'ols', 'skewt', 'semi-param', 'two-piece-normal'};
 
 % Spec selection
@@ -623,7 +623,35 @@ switch cfg.model_selection
         fcststdev = sqrt(squeeze(bb(:,2,:,:))');
         fcstskew  = squeeze(bb(:,3,:,:))';
 
+        % what if we do not want only last origin?
+        %{
+        case 2  %────────────────── Skew-t  ──────
+
+        nTt = size(pred_q, 1);   % number of forecast origins
+
+        param_skt = nan(4, cfg.horizons, nTt);
+        fcstmean  = nan(nTt, cfg.horizons);
+        fcststdev = nan(nTt, cfg.horizons);
+        fcstskew  = nan(nTt, cfg.horizons);
+        
+        for t = 78:nTt
+
+            disp("ciao")
+
+            PQ = reshape(pred_q(t,:,:), 1, 1, Qn, cfg.horizons, 1);
+            [aa, ~, ~, ~, bb] = fit_skewt_to_quantiles_all( ...
+            PQ, cfg.quantiles, [0.05 0.25 0.5 0.75 0.95], 1, 1:cfg.horizons);
+        
+            param_skt(:,:,t) = squeeze(aa);              % 4 × H for this origin
+            fcstmean(t,:)    = squeeze(bb(:,1,:,:))';
+            fcststdev(t,:)   = sqrt(squeeze(bb(:,2,:,:))');
+            fcstskew(t,:)    = squeeze(bb(:,3,:,:))';
+        end
+        %}
+
+
     case 3  %────────────────── Semi-parametric ───────────────────────────
+
         semi_param_distr = NaN(nOrigins, 20000, cfg.horizons);
         empirical_cdf    = NaN(20001, 2, nOrigins, cfg.horizons);
         fcstmean  = NaN(nOrigins, cfg.horizons);
@@ -722,6 +750,37 @@ end
 
 % Full actual series as datetime (used in sections 7 and 8)
 actualDT = datetime(dateNumeric_full, 'ConvertFrom','datenum');
+
+%{ 
+
+% Export moments to Excel
+% fcstmean/fcststdev/fcstskew are now nOrigins × H for every model.
+assert(exist('fcstmean','var') && isequal(size(fcstmean), size(fcststdev)) && isequal(size(fcstmean), size(fcstskew)), ...
+    'fcstmean/fcststdev/fcstskew not defined or mismatched for model_selection=%d', cfg.model_selection);
+
+xlsFile  = fullfile(outDir, sprintf('%s_best_spec_gdp_%s_extended.xlsx', ...
+    cfg.modellist{cfg.model_selection}, dep_sfx));
+colNames = cellstr(strcat('h_', string(0:cfg.horizons-1)));
+
+nTt        = size(fcstmean, 1);
+dates_xls = quarters_origin(1:nTt);   % use (end-nT+1:end) instead if quarters_origin
+                                      % is the full sample rather than one entry per origin
+
+mom_xls    = {fcstmean, fcststdev, fcstskew};
+momentVars = {'fcstmean','fcststdev','fcstskew'};
+
+if isfile(xlsFile), delete(xlsFile); end   % avoid stale columns/sheets from earlier runs
+
+for i = 1:3
+    tbl = [table(dates_xls(:), 'VariableNames',{'Dates'}), ...
+           array2table(mom_xls{i}, 'VariableNames', colNames)];
+    writetable(tbl, xlsFile, 'Sheet', momentVars{i});
+end
+
+% Full actual series as datetime (used in sections 7 and 8)
+actualDT = datetime(dateNumeric_full, 'ConvertFrom','datenum');
+
+%}
 
 %% ════════════════════════════════════════════════════════════════════════
 %%  7.  ROLLING FAN CHARTS  (one per horizon; x-axis = TARGET date)
