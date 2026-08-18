@@ -468,42 +468,50 @@ for m = 1:nModels
 end
  
 %% Galvao-Mantoan-Mitchell  (computationally intensive — runs per model)
-MC     = 1000;
-bootMC = 1000;
+MC     = 5000;
+bootMC = 200;
 rng(bootMC, 'twister');
 rvec_gmm = 0:0.001:1;
+
+N_sim_h1 = 200000;
+fprintf('Precomputing horizon-1 closed-form (Brownian bridge) distribution,\n');
+fprintf('anchored to R&S(2019)''s tabulated KS=1.339 / CvM=0.460...\n');
+[Kv_sim_h1, CVMv_sim_h1] = closedform_h1_cv_anchored(rvec_gmm, N_sim_h1, 987654);
+fprintf('Done.\n\n');
 
 for m = 1:nModels
     mod  = models{m};
     zinf = zinf_all{m};
     z    = zinf';
     P    = size(z, 1);
-    el   = floor(P^(1/4));
+    % 2026-08-13: switched from P^(1/4) to P^(1/3) -- R&S(2019)'s own
+    % baseline block length (P^(1/4) is only their robustness-panel
+    % choice). The Path Evaluation project's own Monte Carlo work found
+    % P^(1/3) gives Sup Test size consistently closer to nominal 5% than
+    % P^(1/4), matching the choice now used in that project's production
+    % sweep (multipleH_size.m).
+    el   = floor(P^(1/3));
     Hz   = size(z, 2);
     KS   = results.(mod).KS_vec(:)';
     CVM  = results.(mod).CVM_vec(:)';
-
     QVrejvecs       = zeros(MC, 3);
     CVMrejvecs      = zeros(MC, 3);
     QVrejvecs_bonf  = zeros(MC, 3);
     CVMrejvecs_bonf = zeros(MC, 3);
-
     parfor j = 1:MC
         stream1 = RandStream('mrg32k3a', 'seed', 4829575);
         stream1.Substream = j;
         [QVrej_j, CVMrej_j, QVbonf_j, CVMbonf_j] = ...
-            size_statistic_h2(z, KS, CVM, Hz, stream1, rvec_gmm, el, bootMC);
+            size_statistic_h2_shifted_h1rankfix(z, KS, CVM, Hz, stream1, rvec_gmm, el, bootMC, Kv_sim_h1, CVMv_sim_h1);
         QVrejvecs(j,:)       = QVrej_j;
         CVMrejvecs(j,:)      = CVMrej_j;
         QVrejvecs_bonf(j,:)  = QVbonf_j;
         CVMrejvecs_bonf(j,:) = CVMbonf_j;
     end
-
     results.(mod).gmm_ks       = mean(QVrejvecs,      1);
     results.(mod).gmm_cvm      = mean(CVMrejvecs,      1);
     results.(mod).gmm_ks_bonf  = mean(QVrejvecs_bonf, 1);
     results.(mod).gmm_cvm_bonf = mean(CVMrejvecs_bonf,1);
-
     fprintf('GMM done: %s\n', mod);
 end
  
