@@ -475,7 +475,7 @@ for h_plot = cfg.hPlot
     legend(ax,'show','Location','northoutside','Orientation','horizontal'); legend boxoff;
     set(ax,'FontSize',12);
     %title(ax, sprintf('Inflation (CPI) — OOS fan  |  h = %d months ahead', h_plot-1));
-    saveFig(fig, fanDir, sprintf('inflation_fanchart_OOS_h%d.png', h_plot));
+    %saveFig(fig, fanDir, sprintf('inflation_fanchart_OOS_h%d.png', h_plot));
 
 end
 
