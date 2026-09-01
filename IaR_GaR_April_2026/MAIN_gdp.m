@@ -810,8 +810,10 @@ for h_plot = cfg.hPlot
          'DisplayName','50^{th}');
 
     oos_mask = actualDT >= tgt_v(1);
-    plot(ax, actualDT(oos_mask)+calquarters(h_plot - 1), actual_var(oos_mask), ...
-         'k', 'LineWidth',1.25, 'DisplayName','Outturn');
+    if h_plot <= 2
+        plot(ax, actualDT(oos_mask), actual_var(oos_mask), ...
+             'k', 'LineWidth',1.25, 'DisplayName','Outturn');
+    end
 
     % Set xlim explicitly to the valid data range before computing ticks,
     % so tick labels are always in chronological order.
