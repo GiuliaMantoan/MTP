@@ -76,7 +76,7 @@ cfg.var.current_act = {'mgdp_yoy'};               % current economic activity
 cfg.var.leverage    = {'global_credit_level'};    % leverage / credit-to-GDP growth
 %                  'delta_3y_credit_to_gdp_all'   % 3-year change in the United Kingdom’s credit-to-GDP ratio
 
-cfg.var.fci         = {'ciss_uk'};                % financial conditions
+cfg.var.fci         = {'ciss_uk_scaled'};                % financial conditions
 %                   'yield_curve_slope'           % 10-year minus 1-year zero-coupon nominal spot rates
 %                   'market_vol_uk'               % Quarterly realized return volatility of the MSCI UK Index
 
@@ -939,7 +939,8 @@ colors  = lines(numel(qt_ls));
 var_order  = 1 : nPred;          % 4 predictors (no labour)
 var_labels = { sprintf('ECONOMIC\nACTIVITY'),   sprintf('LEVERAGE\nGROWTH'),   ...
                sprintf('FINANCIAL\nCONDITIONS'), sprintf('NOMINAL\nINDICATOR')};
-var_ylims  = { [-100, 100]; [-0.6, 0.2]; [-25, 20]; [-0.1, 0.1]};
+var_ylims  = { [-1, 1]; [-0.6, 0.205]; [-2.5, 2.0]; [-0.1, 0.1]};
+var_yexp = [0; 0; 0; -1];   % last row displayed as ×10^{-1}
 
 horLabels = {};
 for iH = 1:numel(cfg.hor_ls)
@@ -969,6 +970,11 @@ for k = 1:numel(var_order)
         ax.XTick      = 1:numel(qt_ls);
         ax.XTickLabel = qlabels;
         if k <= numel(var_ylims) && ~isempty(var_ylims{k}), ylim(ax, var_ylims{k}); end
+
+        if var_yexp(k) ~= 0
+        ax.YAxis.Exponent = var_yexp(k);
+        end
+        
         ax.YAxis.TickLabelFormat = '%.1f';
         if iH == 1, ylabel(ax, var_labels{k}, 'Interpreter','none'); end
         if k  == 1
