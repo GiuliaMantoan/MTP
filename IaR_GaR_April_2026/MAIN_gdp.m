@@ -792,24 +792,49 @@ qt_idx = arrayfun(@(q) find(abs(cfg.quantiles-q)<1e-8,1), ...
 covid_start_dt = datetime(cfg.covidStart, 'ConvertFrom','datenum');
 covid_end_dt   = datetime(cfg.covidEnd,   'ConvertFrom','datenum');
 
+% Extend Covid exclusion through the lag/base-effect buffer
+covid_end_ext_dt = covid_end_dt + calquarters(cfg.covidLagBuffer);
+
 for h_plot = cfg.hPlot
 
     tgt_dates = quarters_origin + calquarters(h_plot - 1);
 
     Q = squeeze(pred_q(:, qt_idx, h_plot));
 
+    covid_plot_start = covid_start_dt   + calquarters(h_plot-1);
+    covid_plot_end   = covid_end_ext_dt + calquarters(h_plot-1);
+
     valid  = ~all(isnan(Q), 2);
-    Q_v    = Q(valid, :);
-    tgt_v  = tgt_dates(valid);
+    %Q_v    = Q(valid, :);
+    %tgt_v  = tgt_dates(valid);
 
     fig = figure('Units','normalized','Position',[0.2 0.15 0.6 0.7],'Color','w');
     ax  = gca; hold(ax,'on');
 
-    plotFanBands(ax, tgt_v, Q_v);
-    plot(ax, tgt_v, Q_v(:,4), '--', 'Color',[0 0 0.7], 'LineWidth',1.2, ...
+    % Identify the two valid forecast blocks
+    pre_mask  = tgt_dates < covid_plot_start;
+    post_mask = tgt_dates > covid_plot_end;
+
+    % Pre-Covid fan bands: keep legend entries
+    plotFanBands(ax, tgt_dates(pre_mask), Q(pre_mask,:));
+    
+    % Post-Covid fan bands: hide duplicate legend entries
+    old_children = ax.Children;
+    plotFanBands(ax, tgt_dates(post_mask), Q(post_mask,:));
+    
+    new_children = setdiff(ax.Children, old_children);
+    set(new_children, 'HandleVisibility', 'off');
+
+    % Median: NaNs naturally break the line over the excluded period
+    plot(ax, tgt_dates, Q(:,4), '--', ...
+         'Color',[0 0 0.7], 'LineWidth',1.2, ...
          'DisplayName','50^{th}');
 
-    oos_mask = actualDT >= tgt_v(1);
+    first_valid = find(valid,1,'first');
+    last_valid  = find(valid,1,'last');
+    
+    oos_mask = actualDT >= tgt_dates(first_valid);
+
     if h_plot <= 2
         plot(ax, actualDT(oos_mask), actual_var(oos_mask), ...
              'k', 'LineWidth',1.25, 'DisplayName','Outturn');
@@ -817,8 +842,9 @@ for h_plot = cfg.hPlot
 
     % Set xlim explicitly to the valid data range before computing ticks,
     % so tick labels are always in chronological order.
-    xl_lo = tgt_v(1);
-    xl_hi = max(tgt_v(end), actualDT(end) + calquarters(h_plot - 1));
+    xl_lo = tgt_dates(first_valid);
+    xl_hi = max(tgt_dates(last_valid), ...
+                actualDT(end) + calquarters(h_plot - 1));
     xlim(ax, [xl_lo, xl_hi]);
 
     % Generate ticks inside the visible range only (avoids out-of-order labels)
@@ -831,13 +857,16 @@ for h_plot = cfg.hPlot
     grid(ax, 'on');
 
     yl = [-10, 8];
+
     covid_rect = fill(ax, ...
-        [covid_start_dt+calquarters(h_plot-1), covid_end_dt+calquarters(h_plot-1), ...
-         covid_end_dt+calquarters(h_plot-1),   covid_start_dt+calquarters(h_plot-1)], ...
+        [covid_plot_start, covid_plot_end, ...
+         covid_plot_end,   covid_plot_start], ...
         [yl(1), yl(1), yl(2), yl(2)], ...
-        [0.75 0.75 0.75], 'EdgeColor','none', 'FaceAlpha',0.4, ...
+        [0.75 0.75 0.75], ...
+        'EdgeColor','none', ...
+        'FaceAlpha',0.4, ...
         'DisplayName','Covid period');
-    uistack(covid_rect, 'bottom');
+    uistack(covid_rect,'bottom');    
     ylim(ax, yl);
 
     legend(ax,'show','Location','northoutside','Orientation','horizontal');
