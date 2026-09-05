@@ -74,6 +74,7 @@ cfg(1).sktStepMonths = 3;   % growth skew-t horizons step in quarters
 % for growth only, one row per metric (mean/std/skew), matching the
 % bounds used previously for the growth charts.
 cfg(1).yClamp = [-10 10; -8 8; -4 4];
+cfg(1).covidBlank   = true;   % blank moments during Covid, as in the fan charts
 
 cfg(2).name         = 'Inflation';
 cfg(2).fileTag       = 'inflation';
@@ -84,6 +85,7 @@ cfg(2).boeStepMonths = 3;   % BoE inflation horizons step in quarters
 cfg(2).smpStepMonths = 1;   % inflation semi-param horizons step in MONTHS
 cfg(2).sktStepMonths = 1;   % inflation skew-t horizons step in MONTHS
 cfg(2).yClamp = [];         % no axis clamping for inflation
+cfg(2).covidBlank   = false;  % leave inflation series intact through Covid (shading only)
 
 %% ---- Main loop over variables --------------------------------------
 for v = 1:numel(cfg)
@@ -122,8 +124,16 @@ for v = 1:numel(cfg)
         [~, sktRows] = ismember(commonDates, sktKey);
 
         % Covid mask on the (shared) origin-date axis. Computed once per
-        % variable/metric since it does not depend on horizon here.
-        covidMask = commonDates >= shadeStart & commonDates <= shadeEnd;
+        % variable/metric since it does not depend on horizon here. Only
+        % applied for variables with covidBlank = true (growth); for
+        % inflation this stays all-false, so nothing gets blanked and the
+        % series is plotted exactly as before, with the grey patch as
+        % the only Covid marker.
+        if vcfg.covidBlank
+            covidMask = commonDates >= shadeStart & commonDates <= shadeEnd;
+        else
+            covidMask = false(size(commonDates));
+        end
 
         for h = 1:numel(targetMonths)
 
