@@ -18,6 +18,15 @@
 % Series across the three models are aligned by their forecast-origin
 % date (inner join), since the BoE, skew-t and semi-param files no longer
 % necessarily share the same date range or number of observations.
+%
+% Covid treatment: the x-axis here is the forecast-ORIGIN date (unlike
+% the rolling fan charts, which plot against the target date), so the
+% exclusion window does not need to be shifted per horizon. Any series
+% observation whose origin falls inside [shadeStart, shadeEnd] is set to
+% NaN before plotting, so the model lines show a genuine gap over the
+% Covid period (and its base-effect/lag buffer) instead of interpolating
+% straight through it. The grey patch is retained purely as a visual
+% marker of that same window.
 
 close all; clear; clc;
 
@@ -33,6 +42,10 @@ end
 models      = {'Fan Charts', 'Semiparam', 'Skew-t'};
 colors      = {'b', 'r', 'k'};              % blue, red, black
 linestyles  = {'-', '--', ':'};
+
+% Covid exclusion window (origin-date basis). shadeEnd already runs well
+% past the acute 2020 shock to absorb the lagged/base-effect distortion
+% in the data, mirroring covidEnd + covidLagBuffer in the fan chart script.
 shadeStart  = datetime(2020,4,1);
 shadeEnd    = datetime(2022,6,30);
 
@@ -40,9 +53,9 @@ metricSheets = {'fcstmean', 'fcststdev', 'fcstskew'};
 metricLabels = {'Mean', 'Std. Dev.', 'Skew'};
 metricTags   = {'mean', 'std', 'skew'};
 
-targetMonths  = [3, 12, 24];                              % 1Q, 1Y, 2Y ahead
-horizonTags   = {'1q', '1y', '2y'};
-horizonTitles = {'One Quarter Ahead', 'One Year Ahead', 'Two Years Ahead'};
+targetMonths  = [3, 12, 24, 36];                          % 1Q, 1Y, 2Y, 3Y ahead
+horizonTags   = {'1q', '1y', '2y', '3y'};
+horizonTitles = {'One Quarter Ahead', 'One Year Ahead', 'Two Years Ahead', 'Three Years Ahead'};
 
 %% ---- Variable configuration ---------------------------------------
 cfg = struct([]);
@@ -108,6 +121,10 @@ for v = 1:numel(cfg)
         [~, smpRows] = ismember(commonDates, smpKey);
         [~, sktRows] = ismember(commonDates, sktKey);
 
+        % Covid mask on the (shared) origin-date axis. Computed once per
+        % variable/metric since it does not depend on horizon here.
+        covidMask = commonDates >= shadeStart & commonDates <= shadeEnd;
+
         for h = 1:numel(targetMonths)
 
             tMonths = targetMonths(h);
@@ -119,6 +136,14 @@ for v = 1:numel(cfg)
             boeSeries = boeTbl{boeRows, boeCol};
             smpSeries = smpTbl{smpRows, smpCol};
             sktSeries = sktTbl{sktRows, sktCol};
+
+            % Blank out the Covid period: NaNs naturally break each line
+            % over the excluded window instead of interpolating through
+            % it, so the chart doesn't imply a stable forecast density
+            % existed during that stretch.
+            boeSeries(covidMask) = NaN;
+            smpSeries(covidMask) = NaN;
+            sktSeries(covidMask) = NaN;
 
             figure('Visible', 'off');
             hold on;
